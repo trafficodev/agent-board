@@ -109,7 +109,7 @@ export default function BoardView({ board, cards, onRefresh }: Props) {
                     onDragStart={handleDragStart}
                     onDelete={handleDeleteCard}
                     onMove={handleMoveCard}
-                    onSessionAdded={onRefresh}
+                    onRefresh={onRefresh}
                   />
                 ))}
               </div>

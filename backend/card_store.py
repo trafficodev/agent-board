@@ -1,7 +1,7 @@
-"""Card persistence. Cards are stored inside the board JSON file."""
+"""Card persistence. Cards are stored in per-board JSON files."""
 
+import fcntl
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from models import (
@@ -12,16 +12,14 @@ from models import (
     SessionEntry,
     UpdateCard,
     _now,
-    _uid,
 )
 from paths import board_path, events_path
 
-from board_store import get_board, _save_board
+from board_store import get_board
 
 
 def _cards_path(board_id: str) -> Path:
-    p = board_path(board_id).parent / f"{board_id}_cards.json"
-    return p
+    return board_path(board_id).parent / f"{board_id}_cards.json"
 
 
 def _reindex_column(cards: list[Card], column_id: str) -> None:
@@ -47,11 +45,26 @@ def _write_cards(board_id: str, cards: list[Card]) -> None:
     p.write_text(json.dumps([c.model_dump(mode="json") for c in cards], indent=2, default=str))
 
 
-def _append_event(board_id: str, event: Event) -> None:
-    from paths import events_path
-    ep = events_path(board_id)
-    with open(ep, "a") as f:
-        f.write(event.model_dump_json() + "\n")
+def _with_lock(board_id: str) -> Path:
+    """Return a lock file path for a board. Used by _locked_write."""
+    d = board_path(board_id).parent
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{board_id}.lock"
+
+
+def _locked_write(board_id: str, cards: list[Card], event: Event | None = None) -> None:
+    """Write cards (and optionally append an event) under a per-board file lock."""
+    lock_path = _with_lock(board_id)
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            _write_cards(board_id, cards)
+            if event:
+                ep = events_path(board_id)
+                with open(ep, "a") as f:
+                    f.write(event.model_dump_json() + "\n")
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 # --- Cards ---
@@ -72,7 +85,7 @@ def get_card(board_id: str, card_id: str) -> Card | None:
     return next((c for c in cards if c.id == card_id), None)
 
 
-def create_card(board_id: str, data: "CreateCard") -> Card | None:
+def create_card(board_id: str, data: "UpdateCard") -> Card | None:
     from models import CreateCard
     board = get_board(board_id)
     if not board:
@@ -97,10 +110,8 @@ def create_card(board_id: str, data: "CreateCard") -> Card | None:
         labels=labels,
     )
     cards.append(card)
-    # Reindex all cards in this column to guarantee unique sequential positions
     _reindex_column(cards, data.column_id)
-    _write_cards(board_id, cards)
-    _append_event(board_id, Event(type="card_created", detail=card.title))
+    _locked_write(board_id, cards, Event(type="card_created", detail=card.title))
     return card
 
 
@@ -129,15 +140,13 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
     if data.labels is not None:
         card.labels = [l.lower() for l in data.labels]
 
-    # Reindex columns if position or column changed
     if col_changed or data.position is not None:
         _reindex_column(cards, card.column_id)
         if col_changed and old_col != card.column_id:
             _reindex_column(cards, old_col)
 
     card.updated_at = _now()
-    _write_cards(board_id, cards)
-    _append_event(board_id, Event(type="card_updated", detail=card.title))
+    _locked_write(board_id, cards, Event(type="card_updated", detail=card.title))
     return card
 
 
@@ -161,12 +170,10 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     card.position = min(pos, len(col_cards))
 
     card.updated_at = _now()
-    # Reindex both columns to guarantee unique sequential positions
     _reindex_column(cards, data.column_id)
     if old_col != data.column_id:
         _reindex_column(cards, old_col)
-    _write_cards(board_id, cards)
-    _append_event(board_id, Event(
+    _locked_write(board_id, cards, Event(
         type="card_moved",
         detail=f"{card.title}: {old_col[:8]}… → {data.column_id[:8]}…",
     ))
@@ -181,8 +188,7 @@ def delete_card(board_id: str, card_id: str) -> bool:
     col_id = card.column_id
     cards = [c for c in cards if c.id != card_id]
     _reindex_column(cards, col_id)
-    _write_cards(board_id, cards)
-    _append_event(board_id, Event(type="card_deleted", detail=card_id))
+    _locked_write(board_id, cards, Event(type="card_deleted", detail=card_id))
     return True
 
 
@@ -200,8 +206,7 @@ def add_session(board_id: str, card_id: str, data: AddSession) -> Card | None:
     )
     card.session_history.append(entry)
     card.updated_at = _now()
-    _write_cards(board_id, cards)
-    _append_event(board_id, Event(
+    _locked_write(board_id, cards, Event(
         type="session_added",
         detail=f"session {data.session_id[:8]}… → {card.title}",
         actor=data.system or data.session_id,

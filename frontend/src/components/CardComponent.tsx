@@ -8,7 +8,7 @@ interface Props {
   onDragStart: (cardId: string) => void;
   onDelete: (cardId: string) => void;
   onMove: (cardId: string, columnId: string) => void;
-  onSessionAdded: () => void;
+  onRefresh: () => void;
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -18,7 +18,7 @@ const PRIORITY_COLORS: Record<string, string> = {
   low: "#95a5a6",
 };
 
-export default function CardComponent({ card, board, onDragStart, onDelete, onMove, onSessionAdded }: Props) {
+export default function CardComponent({ card, board, onDragStart, onDelete, onMove, onRefresh }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(card.title);
@@ -35,7 +35,7 @@ export default function CardComponent({ card, board, onDragStart, onDelete, onMo
   const handleSaveEdit = async () => {
     await api.updateCard(board.id, card.id, { title: editTitle, body: editBody });
     setEditing(false);
-    onSessionAdded();
+    onRefresh();
   };
 
   const otherColumns = board.columns.filter((c) => c.id !== card.column_id);
