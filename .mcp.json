@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "testape": {
+      "command": "/Users/ofekron/testape/cli/testape_mcp/.venv/bin/testape-mcp"
+    }
+  }
+}
