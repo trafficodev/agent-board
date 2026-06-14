@@ -77,8 +77,18 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     };
   }, [board.columns, cards]);
 
+  const typeStats = useMemo(
+    () => labels.map((label) => ({
+      label,
+      count: cards.filter((card) => card.labels.includes(label)).length,
+    })),
+    [cards, labels],
+  );
+
   const cardsForColumn = (columnId: string) =>
     getColumnRootCards(visibleTopLevelCards, columnId) as Card[];
+
+  const hasActiveCardFilter = search.trim() !== "" || priorityFilter !== "all" || labelFilter !== "all";
 
   const resetNewCard = () => setNewCard(DEFAULT_NEW_CARD);
 
@@ -244,6 +254,28 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
           </div>
         </div>
 
+        <div className="type-bar">
+          <button className={labelFilter === "all" ? "active" : ""} onClick={() => setLabelFilter("all")}>All types</button>
+          {typeStats.map((item) => (
+            <button
+              key={item.label}
+              className={labelFilter === item.label ? "active" : ""}
+              onClick={() => setLabelFilter(item.label)}
+            >
+              {item.label.replaceAll("_", " ")} <span>{item.count}</span>
+            </button>
+          ))}
+          <div className="add-state-form">
+            <input
+              placeholder="New state"
+              value={newColumnName}
+              onChange={(e) => setNewColumnName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAddColumn()}
+            />
+            <button onClick={handleAddColumn} disabled={!newColumnName.trim()}>Add state</button>
+          </div>
+        </div>
+
         {syncStatus?.enabled && (
           <div className={`canvas-sync-status ${syncStatus.last_error ? "error" : ""}`}>
             {syncStatus.last_error
@@ -278,6 +310,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
         {board.columns.map((column) => {
           const columnCards = cardsForColumn(column.id);
           const totalColumnCards = cards.filter((card) => card.column_id === column.id).length;
+          const countLabel = hasActiveCardFilter ? `${columnCards.length}/${totalColumnCards}` : `${totalColumnCards}`;
 
           return (
             <div
@@ -300,7 +333,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
                 ) : (
                   <h3>{column.name}</h3>
                 )}
-                <span className="card-count">{totalColumnCards}</span>
+                <span className="card-count">{countLabel}</span>
                 <button
                   className="icon-button"
                   onClick={() => {
@@ -383,15 +416,6 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
           );
         })}
 
-        <div className="column add-column">
-          <input
-            placeholder="Add column"
-            value={newColumnName}
-            onChange={(e) => setNewColumnName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleAddColumn()}
-          />
-          <button onClick={handleAddColumn} disabled={!newColumnName.trim()}>Add column</button>
-        </div>
       </div>
     </div>
   );

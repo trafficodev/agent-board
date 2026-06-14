@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { getColumnRootCards, groupSameColumnChildren } from "./src/boardLogic.js";
 
-const card = (id, column_id, parent_id = null, position = 0) => ({
+const card = (id, column_id, parent_id = null, position = 0, labels = ["feature"]) => ({
   id,
   column_id,
   parent_id,
   position,
+  labels,
 });
 
 describe("board column card grouping", () => {
@@ -28,5 +29,15 @@ describe("board column card grouping", () => {
 
     assert.deepEqual(getColumnRootCards(cards, "features").map((item) => item.id), ["parent"]);
     assert.deepEqual(groupSameColumnChildren(cards).get("parent")?.map((item) => item.id), ["child"]);
+  });
+
+  it("renders same-state cross-type linked cards as roots", () => {
+    const cards = [
+      card("feature", "backlog", null, 0, ["feature"]),
+      card("requirement", "backlog", "feature", 1, ["requirement"]),
+    ];
+
+    assert.deepEqual(getColumnRootCards(cards, "backlog").map((item) => item.id), ["feature", "requirement"]);
+    assert.equal(groupSameColumnChildren(cards).has("feature"), false);
   });
 });

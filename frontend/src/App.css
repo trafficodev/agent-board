@@ -247,6 +247,7 @@ textarea {
 .canvas-sync-controls,
 .board-filters,
 .board-stats,
+.type-bar,
 .inline-actions,
 .new-card-actions,
 .edit-actions,
@@ -315,6 +316,32 @@ textarea {
 
 .board-filters select {
   width: auto;
+}
+
+.type-bar {
+  margin-top: 12px;
+}
+
+.type-bar button {
+  text-transform: capitalize;
+}
+
+.type-bar button.active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.type-bar button span {
+  color: var(--text-muted);
+  margin-left: 5px;
+}
+
+.add-state-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 190px) auto;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .canvas-sync-status {
@@ -461,13 +488,6 @@ textarea {
   font-size: 13px;
   padding: 14px;
   text-align: center;
-}
-
-.add-column {
-  justify-content: flex-start;
-  gap: 8px;
-  padding: 10px;
-  height: fit-content;
 }
 
 .card {
@@ -677,7 +697,14 @@ textarea {
 
   .board-filters input,
   .board-filters select,
-  .board-filters button {
+  .board-filters button,
+  .type-bar button {
+    width: 100%;
+  }
+
+  .add-state-form {
+    grid-template-columns: 1fr;
+    margin-left: 0;
     width: 100%;
   }
 
@@ -685,8 +712,7 @@ textarea {
     padding: 12px;
   }
 
-  .column,
-  .column.add-column {
+  .column {
     width: min(86vw, 380px);
     min-width: min(86vw, 380px);
   }
