@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { Board, Card } from "./types";
 import * as api from "./api";
 import BoardView from "./components/BoardView";
@@ -9,23 +9,19 @@ function App() {
   const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
   const [cards, setCards] = useState<Card[]>([]);
   const [newBoardName, setNewBoardName] = useState("");
-  const activeBoardRef = useRef<string | null>(null);
-
-  // Keep ref in sync
-  activeBoardRef.current = activeBoardId;
 
   const loadBoards = useCallback(async () => {
     const list = await api.listBoards();
     setBoards(list);
-    // Only auto-select on initial load (no board selected yet)
-    if (!activeBoardRef.current && list.length > 0) {
-      setActiveBoardId(list[0].id);
-    }
-  }, []); // no deps — uses ref to read current state
+    setActiveBoardId((current) => current ?? list[0]?.id ?? null);
+  }, []);
 
   useEffect(() => {
-    loadBoards();
-  }, [loadBoards]);
+    void api.listBoards().then((list) => {
+      setBoards(list);
+      setActiveBoardId((current) => current ?? list[0]?.id ?? null);
+    });
+  }, []);
 
   useEffect(() => {
     if (!activeBoardId) return;
@@ -48,6 +44,11 @@ function App() {
       const remaining = boards.filter((b) => b.id !== id);
       setActiveBoardId(remaining.length > 0 ? remaining[0].id : null);
     }
+    await loadBoards();
+  };
+
+  const handleBoardUpdated = async (board: Board) => {
+    setBoards((current) => current.map((item) => (item.id === board.id ? board : item)));
     await loadBoards();
   };
 
@@ -100,6 +101,7 @@ function App() {
             board={activeBoard}
             cards={cards}
             onRefresh={handleRefreshCards}
+            onBoardUpdated={handleBoardUpdated}
           />
         ) : (
           <div className="empty-state">
