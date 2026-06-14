@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getColumnRootCards, groupSameColumnChildren } from "./src/boardLogic.js";
+import { getColumnRootCards, groupSameColumnChildren, isVisualChild } from "./src/boardLogic.js";
 
 const card = (id, column_id, parent_id = null, position = 0, labels = ["feature"]) => ({
   id,
@@ -39,5 +39,6 @@ describe("board column card grouping", () => {
 
     assert.deepEqual(getColumnRootCards(cards, "backlog").map((item) => item.id), ["feature", "requirement"]);
     assert.equal(groupSameColumnChildren(cards).has("feature"), false);
+    assert.equal(isVisualChild(cards[1], cards[0]), false);
   });
 });

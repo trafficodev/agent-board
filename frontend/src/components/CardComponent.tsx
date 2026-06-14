@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Board, Card } from "../types";
 import * as api from "../api";
+import { isVisualChild } from "../boardLogic.js";
 
 interface Props {
   card: Card;
@@ -84,6 +85,12 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
 
   const otherColumns = board.columns.filter((c) => c.id !== card.column_id);
   const isExpanded = expanded || forceExpanded;
+  const parentCard = card.parent_id ? allCards.find((item) => item.id === card.parent_id) ?? null : null;
+  const linkedChildren = allCards
+    .filter((item) => item.parent_id === card.id)
+    .filter((item) => !isVisualChild(item, card))
+    .sort((a, b) => a.position - b.position);
+  const connectionCount = (parentCard ? 1 : 0) + linkedChildren.length;
 
   return (
     <div
@@ -96,6 +103,7 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
         <span className="priority-dot" style={{ background: PRIORITY_COLORS[card.priority] }} />
         <span className="card-title">{card.title}</span>
         {subTasks.length > 0 && <span className="subtask-count">{subTasks.length}</span>}
+        {connectionCount > 0 && <span className="connection-count">{connectionCount}</span>}
       </div>
 
       {card.labels.length > 0 && (
@@ -128,6 +136,26 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
           ) : (
             <>
               {card.body && <p className="card-body">{card.body}</p>}
+
+              {(parentCard || linkedChildren.length > 0) && (
+                <div className="card-connections">
+                  <span className="section-label">Connections</span>
+                  {parentCard && (
+                    <div className="connection-row">
+                      <span className="connection-kind">Parent</span>
+                      <span className="connection-title">{parentCard.title}</span>
+                      {parentCard.labels.map((label) => <span key={label} className="label">{label}</span>)}
+                    </div>
+                  )}
+                  {linkedChildren.map((child) => (
+                    <div key={child.id} className="connection-row">
+                      <span className="connection-kind">Linked</span>
+                      <span className="connection-title">{child.title}</span>
+                      {child.labels.map((label) => <span key={label} className="label">{label}</span>)}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {subTasks.length > 0 && (
                 <div className="sub-tasks">

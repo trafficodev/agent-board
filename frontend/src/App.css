@@ -449,12 +449,18 @@ textarea {
 }
 
 .card-count,
-.subtask-count {
+.subtask-count,
+.connection-count {
   border-radius: 999px;
   background: rgba(16, 24, 32, 0.08);
   color: var(--text-muted);
   font-size: 12px;
   padding: 2px 7px;
+}
+
+.connection-count {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .column-edit-actions,
@@ -581,11 +587,40 @@ textarea {
   font-size: 12px;
 }
 
+.card-connections,
 .session-history,
 .sub-tasks {
   display: grid;
   gap: 6px;
   margin-top: 10px;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff7ed;
+  padding: 6px;
+}
+
+.connection-kind {
+  border-radius: 999px;
+  background: #ffedd5;
+  color: #9a3412;
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
+.connection-title {
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .session-entry {

@@ -2,11 +2,15 @@ export function isColumnRoot(card, cardsById) {
   if (!card.parent_id) return true;
   const parent = cardsById.get(card.parent_id);
   if (!parent) return true;
-  if (parent.column_id !== card.column_id) return true;
-  return !hasSharedLabel(card, parent);
+  return !isVisualChild(card, parent);
 }
 
-function hasSharedLabel(card, parent) {
+export function isVisualChild(card, parent) {
+  if (parent.column_id !== card.column_id) return false;
+  return hasSharedLabel(card, parent);
+}
+
+export function hasSharedLabel(card, parent) {
   if (card.labels.length === 0 || parent.labels.length === 0) return true;
   return card.labels.some((label) => parent.labels.includes(label));
 }
