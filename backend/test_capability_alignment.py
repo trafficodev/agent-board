@@ -1,0 +1,49 @@
+import inspect
+import unittest
+
+import cli
+import client
+import mcp_server
+
+
+UI_CAPABILITIES = {
+    "list_boards",
+    "get_board",
+    "create_board",
+    "update_board",
+    "delete_board",
+    "get_canvas_sync",
+    "enable_canvas_sync",
+    "disable_canvas_sync",
+    "sync_canvas",
+    "add_column",
+    "update_column",
+    "delete_column",
+    "list_cards",
+    "create_card",
+    "get_card",
+    "update_card",
+    "move_card",
+    "delete_card",
+    "add_session",
+    "get_events",
+}
+
+
+class CapabilityAlignmentTest(unittest.TestCase):
+    def test_sdk_mcp_and_cli_cover_ui_capabilities(self):
+        sdk_capabilities = {
+            name
+            for name, value in inspect.getmembers(client, inspect.isfunction)
+            if not name.startswith("_")
+        }
+        mcp_capabilities = {tool.name for tool in mcp_server.TOOLS}
+        cli_capabilities = set(cli.build_parser()._subparsers._group_actions[0].choices)
+
+        self.assertEqual(set(), UI_CAPABILITIES - sdk_capabilities)
+        self.assertEqual(set(), UI_CAPABILITIES - mcp_capabilities)
+        self.assertEqual(set(), UI_CAPABILITIES - cli_capabilities)
+
+
+if __name__ == "__main__":
+    unittest.main()

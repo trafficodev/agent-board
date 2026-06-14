@@ -4,3 +4,5 @@ __pycache__/
 node_modules/
 dist/
 .agent-board/
+# CocoIndex Code (ccc)
+/.cocoindex_code/
