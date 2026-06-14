@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Board, CanvasSyncStatus, Card, Column, Event } from "../types";
 import * as api from "../api";
+import { getColumnRootCards, groupSameColumnChildren } from "../boardLogic.js";
 import CardComponent from "./CardComponent";
 
 interface Props {
@@ -50,7 +51,6 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   const visibleTopLevelCards = useMemo(() => {
     const query = search.trim().toLowerCase();
     return cards
-      .filter((card) => !card.parent_id)
       .filter((card) => priorityFilter === "all" || card.priority === priorityFilter)
       .filter((card) => labelFilter === "all" || card.labels.includes(labelFilter))
       .filter((card) => {
@@ -62,17 +62,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   }, [cards, labelFilter, priorityFilter, search]);
 
   const subTasksByParent = useMemo(() => {
-    const grouped = new Map<string, Card[]>();
-    for (const card of cards) {
-      if (!card.parent_id) continue;
-      const group = grouped.get(card.parent_id) ?? [];
-      group.push(card);
-      grouped.set(card.parent_id, group);
-    }
-    for (const group of grouped.values()) {
-      group.sort((a, b) => a.position - b.position);
-    }
-    return grouped;
+    return groupSameColumnChildren(cards) as Map<string, Card[]>;
   }, [cards]);
 
   const stats = useMemo(() => {
@@ -88,7 +78,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   }, [board.columns, cards]);
 
   const cardsForColumn = (columnId: string) =>
-    visibleTopLevelCards.filter((card) => card.column_id === columnId);
+    getColumnRootCards(visibleTopLevelCards, columnId) as Card[];
 
   const resetNewCard = () => setNewCard(DEFAULT_NEW_CARD);
 
