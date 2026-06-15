@@ -318,6 +318,12 @@ textarea {
   width: auto;
 }
 
+.search-count {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .type-bar {
   margin-top: 12px;
 }

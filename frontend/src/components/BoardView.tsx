@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Board, CanvasSyncStatus, Card, Column, Event } from "../types";
 import * as api from "../api";
 import { getColumnRootCards, groupSameColumnChildren } from "../boardLogic.js";
+import { filterCardsForBoard } from "../boardSearch.js";
 import CardComponent from "./CardComponent";
 
 interface Props {
@@ -48,22 +49,14 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     [cards],
   );
 
-  const visibleTopLevelCards = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return cards
-      .filter((card) => priorityFilter === "all" || card.priority === priorityFilter)
-      .filter((card) => labelFilter === "all" || card.labels.includes(labelFilter))
-      .filter((card) => {
-        if (!query) return true;
-        const haystack = `${card.title} ${card.body} ${card.labels.join(" ")}`.toLowerCase();
-        return haystack.includes(query);
-      })
-      .sort((a, b) => a.position - b.position);
-  }, [cards, labelFilter, priorityFilter, search]);
+  const searchResult = useMemo(
+    () => filterCardsForBoard(cards, board.columns, { query: search, priority: priorityFilter, label: labelFilter }),
+    [board.columns, cards, labelFilter, priorityFilter, search],
+  );
 
   const subTasksByParent = useMemo(() => {
-    return groupSameColumnChildren(cards) as Map<string, Card[]>;
-  }, [cards]);
+    return groupSameColumnChildren(searchResult.cards) as Map<string, Card[]>;
+  }, [searchResult.cards]);
 
   const stats = useMemo(() => {
     const topLevel = cards.filter((card) => !card.parent_id);
@@ -86,7 +79,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   );
 
   const cardsForColumn = (columnId: string) =>
-    getColumnRootCards(visibleTopLevelCards, columnId) as Card[];
+    getColumnRootCards(searchResult.cards, columnId) as Card[];
 
   const hasActiveCardFilter = search.trim() !== "" || priorityFilter !== "all" || labelFilter !== "all";
 
@@ -250,6 +243,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
               <option value="all">All labels</option>
               {labels.map((label) => <option key={label} value={label}>{label}</option>)}
             </select>
+            {hasActiveCardFilter && <span className="search-count">{searchResult.directMatchIds.size}/{cards.length}</span>}
             <button onClick={() => setExpandedCards((value) => !value)}>{expandedCards ? "Compact" : "Expand"}</button>
           </div>
         </div>
