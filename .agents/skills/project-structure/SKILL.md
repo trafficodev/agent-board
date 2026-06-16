@@ -29,6 +29,7 @@ agent-board is a local board application for coordinating agents. The frontend i
 
 - Treat backend stores as the source of truth for persisted board/card data.
 - Keep frontend types aligned with backend models.
+- Every Agent Board capability must be exposed consistently through MCP, CLI, SDK/client, and frontend surfaces. Do not add a board/card/canvas capability to only one consumer path.
 - Do not stage unrelated changes; this repo is used by concurrent agents.
 
 ## Keeping This Skill Current
