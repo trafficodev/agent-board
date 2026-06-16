@@ -19,3 +19,4 @@ export interface SearchTerm {
 
 export function filterCardsForBoard(cards: Card[], columns: Column[], filters: BoardSearchFilters): BoardSearchResult;
 export function parseSearchQuery(query: string): SearchTerm[];
+export function requiresBackendSearch(query: string): boolean;

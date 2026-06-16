@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { filterCardsForBoard, parseSearchQuery } from "./src/boardSearch.js";
+import { filterCardsForBoard, parseSearchQuery, requiresBackendSearch } from "./src/boardSearch.js";
 
 const columns = [
   { id: "features", name: "Features", position: 0 },
@@ -68,6 +68,12 @@ describe("board search", () => {
     assert.deepEqual(search(cards, 'file:"src/App.tsx"'), ["file"]);
     assert.deepEqual(search(cards, "commit:abc1234"), ["commit"]);
     assert.deepEqual(search(cards, "file:backend commit:def5678"), ["other"]);
+  });
+
+  it("marks contains queries as backend searches", () => {
+    assert.equal(requiresBackendSearch("contains:renderSessionData"), true);
+    assert.equal(requiresBackendSearch("content:renderSessionData"), true);
+    assert.equal(requiresBackendSearch("file:App.tsx"), false);
   });
 
   it("excludes negative terms", () => {

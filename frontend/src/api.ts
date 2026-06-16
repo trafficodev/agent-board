@@ -22,6 +22,14 @@ export const deleteBoard = (id: string) => req<{ ok: boolean }>(`/boards/${id}`,
 
 // Cards
 export const listCards = (boardId: string) => req<Card[]>(`/boards/${boardId}/cards`);
+export const searchCards = (boardId: string, data: { query?: string; priority?: string; label?: string }) => {
+  const params = new URLSearchParams();
+  if (data.query) params.set("query", data.query);
+  if (data.priority) params.set("priority", data.priority);
+  if (data.label) params.set("label", data.label);
+  const suffix = params.toString() ? `?${params}` : "";
+  return req<Card[]>(`/boards/${boardId}/cards/search${suffix}`);
+};
 export const createCard = (boardId: string, data: { title: string; body?: string; column_id: string; parent_id?: string | null; priority?: string; labels?: string[] }) =>
   req<Card>(`/boards/${boardId}/cards`, { method: "POST", body: JSON.stringify(data) });
 export const updateCard = (boardId: string, cardId: string, data: Record<string, unknown>) =>

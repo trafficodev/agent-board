@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Board, CanvasSyncStatus, Card, Column, Event } from "../types";
 import * as api from "../api";
 import { getColumnRootCards, groupSameColumnChildren } from "../boardLogic.js";
-import { filterCardsForBoard } from "../boardSearch.js";
+import { filterCardsForBoard, requiresBackendSearch } from "../boardSearch.js";
 import CardComponent from "./CardComponent";
 
 interface Props {
@@ -22,6 +22,8 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   const [syncStatus, setSyncStatus] = useState<CanvasSyncStatus | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
   const [search, setSearch] = useState("");
+  const [backendSearchCards, setBackendSearchCards] = useState<Card[] | null>(null);
+  const [searchError, setSearchError] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Card["priority"]>("all");
   const [labelFilter, setLabelFilter] = useState("all");
   const [expandedCards, setExpandedCards] = useState(false);
@@ -49,10 +51,42 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     [cards],
   );
 
-  const searchResult = useMemo(
-    () => filterCardsForBoard(cards, board.columns, { query: search, priority: priorityFilter, label: labelFilter }),
-    [board.columns, cards, labelFilter, priorityFilter, search],
-  );
+  const useBackendSearch = requiresBackendSearch(search);
+
+  useEffect(() => {
+    if (!useBackendSearch) {
+      setBackendSearchCards(null);
+      setSearchError("");
+      return;
+    }
+
+    let cancelled = false;
+    void api.searchCards(board.id, {
+      query: search,
+      priority: priorityFilter === "all" ? undefined : priorityFilter,
+      label: labelFilter === "all" ? undefined : labelFilter,
+    }).then((result) => {
+      if (cancelled) return;
+      setBackendSearchCards(result);
+      setSearchError("");
+    }).catch((error: Error) => {
+      if (cancelled) return;
+      setBackendSearchCards([]);
+      setSearchError(error.message);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [board.id, labelFilter, priorityFilter, search, useBackendSearch]);
+
+  const searchResult = useMemo(() => {
+    if (useBackendSearch) {
+      const resultCards = backendSearchCards ?? [];
+      return { cards: resultCards, directMatchIds: new Set(resultCards.map((card) => card.id)) };
+    }
+    return filterCardsForBoard(cards, board.columns, { query: search, priority: priorityFilter, label: labelFilter });
+  }, [backendSearchCards, board.columns, cards, labelFilter, priorityFilter, search, useBackendSearch]);
 
   const subTasksByParent = useMemo(() => {
     return groupSameColumnChildren(searchResult.cards) as Map<string, Card[]>;
@@ -247,6 +281,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
             <button onClick={() => setExpandedCards((value) => !value)}>{expandedCards ? "Compact" : "Expand"}</button>
           </div>
         </div>
+        {searchError && <div className="canvas-sync-status error">{searchError}</div>}
 
         <div className="type-bar">
           <button className={labelFilter === "all" ? "active" : ""} onClick={() => setLabelFilter("all")}>All types</button>

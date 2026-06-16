@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+import json
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -14,6 +17,7 @@ FIELD_ALIASES = {
     "commits": "commit",
     "git_commit": "commit",
     "git_commits": "commit",
+    "content": "contains",
 }
 
 FILE_RE = re.compile(r"(^|\s|`)\/?[\w.-]+\/[\w./-]+")
@@ -32,6 +36,7 @@ def search_cards(cards: list[dict[str, Any]], columns: list[dict[str, Any]], que
     column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
     cards_by_id = {card["id"]: card for card in cards}
     children_by_parent = _group_children(cards)
+    rg_cache: dict[tuple[str, tuple[str, ...]], bool] = {}
 
     direct_ids: set[str] = set()
     for card in cards:
@@ -39,7 +44,7 @@ def search_cards(cards: list[dict[str, Any]], columns: list[dict[str, Any]], que
             continue
         if label and label not in card.get("labels", []):
             continue
-        if _matches_query(card, terms, column_names_by_id):
+        if _matches_query(card, terms, column_names_by_id, rg_cache):
             direct_ids.add(card["id"])
 
     if not terms and not priority and not label:
@@ -96,9 +101,9 @@ def _tokenize(query: str) -> list[str]:
     return tokens
 
 
-def _matches_query(card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str]) -> bool:
+def _matches_query(card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
     for term in terms:
-        matched = _matches_term(card, term, column_names_by_id)
+        matched = _matches_term(card, term, column_names_by_id, rg_cache)
         if term.negative and matched:
             return False
         if not term.negative and not matched:
@@ -106,13 +111,15 @@ def _matches_query(card: dict[str, Any], terms: list[SearchTerm], column_names_b
     return True
 
 
-def _matches_term(card: dict[str, Any], term: SearchTerm, column_names_by_id: dict[str, str]) -> bool:
+def _matches_term(card: dict[str, Any], term: SearchTerm, column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
     if term.field == "has":
         return _matches_has(card, term.value)
     if term.field == "file":
         return _matches_file(card, term.value)
     if term.field == "commit":
         return _matches_commit(card, term.value)
+    if term.field == "contains":
+        return _matches_contains(card, term.value, column_names_by_id, rg_cache)
     return any(term.value in _normalize(value) for value in _search_values(card, column_names_by_id, term.field))
 
 
@@ -165,6 +172,77 @@ def _matches_commit(card: dict[str, Any], value: str) -> bool:
     if not _has_commit(card):
         return False
     return value in _normalize(body)
+
+
+def _matches_contains(card: dict[str, Any], value: str, column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
+    if any(value in _normalize(candidate) for candidate in _search_values(card, column_names_by_id, None)):
+        return True
+    if _matches_file(card, value) or _matches_commit(card, value):
+        return True
+
+    paths = tuple(str(path) for path in _existing_edited_file_paths(card))
+    if not paths:
+        return False
+
+    key = (value, paths)
+    if key not in rg_cache:
+        rg_cache[key] = _rg_contains(value, paths)
+    return rg_cache[key]
+
+
+def _rg_contains(value: str, paths: tuple[str, ...]) -> bool:
+    try:
+        result = subprocess.run(
+            ["rg", "--fixed-strings", "--ignore-case", "--quiet", "--", value, *paths],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _existing_edited_file_paths(card: dict[str, Any]) -> list[Path]:
+    projects = [Path(value).expanduser() for value in _metadata_values(card, "projects")]
+    files = _metadata_values(card, "edited_files")
+    paths: list[Path] = []
+    seen: set[str] = set()
+
+    for file_value in files:
+        file_path = Path(file_value).expanduser()
+        candidates = [file_path] if file_path.is_absolute() else [project / file_path for project in projects]
+        if not candidates and not file_path.is_absolute():
+            candidates = [file_path]
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if not resolved.is_file():
+                continue
+            as_string = str(resolved)
+            if as_string in seen:
+                continue
+            seen.add(as_string)
+            paths.append(resolved)
+    return paths
+
+
+def _metadata_values(card: dict[str, Any], key: str) -> list[str]:
+    prefix = f"{key}:"
+    values: list[str] = []
+    for line in str(card.get("body", "")).splitlines():
+        if not line.lower().startswith(prefix):
+            continue
+        raw = line[len(prefix):].strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [raw]
+        if isinstance(parsed, list):
+            values.extend(value for value in parsed if isinstance(value, str) and value)
+        elif isinstance(parsed, str) and parsed:
+            values.append(parsed)
+    return values
 
 
 def _has_file(card: dict[str, Any]) -> bool:

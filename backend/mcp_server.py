@@ -167,12 +167,12 @@ TOOLS = [
     ),
     Tool(
         name="search_cards",
-        description="Search cards by text, quoted phrase, negation, fields, file, commit, session, priority, label, or hierarchy-visible matches",
+        description="Search cards by text, quoted phrase, negation, fields, file, commit, rg-backed contains, session, priority, label, or hierarchy-visible matches",
         inputSchema={
             "type": "object",
             "properties": {
                 "board_id": {"type": "string"},
-                "query": {"type": "string", "description": "Examples: file:frontend/src/App.tsx commit:abc1234 has:file has:commit -label:bug"},
+                "query": {"type": "string", "description": "Examples: file:frontend/src/App.tsx commit:abc1234 contains:renderSessionData has:file has:commit -label:bug"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "label": {"type": "string"},
             },

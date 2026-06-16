@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from search_logic import parse_search_query, search_cards
 
@@ -54,6 +56,38 @@ class SearchLogicTest(unittest.TestCase):
         ]
 
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "file:image.ts")], ["feature", "requirement"])
+
+    def test_searches_file_contents_with_rg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            target = project / "frontend/src/App.tsx"
+            target.parent.mkdir(parents=True)
+            target.write_text("function renderSessionData() { return true; }\n")
+
+            cards = [
+                card("match", body=f'projects: ["{project}"]\nedited_files: ["frontend/src/App.tsx"]'),
+                card("miss", body=f'projects: ["{project}"]\nedited_files: ["frontend/src/Missing.tsx"]'),
+            ]
+
+            self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, 'contains:"renderSessionData"')], ["match"])
+
+    def test_contains_searches_all_card_fields(self):
+        cards = [
+            card("title", title="Render session data"),
+            card("body", body="collapsed preview"),
+            card("label", labels=["bug_report"]),
+            card("priority", priority="critical"),
+            card("session", session_history=[{"session_id": "sid-123", "system": "codex", "action": "audit", "outcome": "success", "timestamp": "now"}]),
+            card("file", body='edited_files: ["frontend/src/App.tsx"]'),
+            card("commit", body='git_commits: ["abc1234 Fix search"]'),
+        ]
+
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:session")], ["title", "session"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:preview")], ["body"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:bug_report")], ["label"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:critical")], ["priority"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:App.tsx")], ["file"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:abc1234")], ["commit"])
 
 
 if __name__ == "__main__":

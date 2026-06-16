@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import board_store as bs
 import card_store as cs
+import search_logic
 from models import (
     AddSession,
     CreateBoard,
@@ -115,6 +116,14 @@ def api_delete_column(board_id: str, column_id: str):
 def api_list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None):
     _board_or_404(board_id)
     return cs.list_cards(board_id, priority=priority, label=label, column_id=column_id)
+
+
+@app.get("/api/boards/{board_id}/cards/search")
+def api_search_cards(board_id: str, query: str = "", priority: str | None = None, label: str | None = None):
+    board = _board_or_404(board_id)
+    cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
+    columns = [column.model_dump(mode="json") for column in board.columns]
+    return search_logic.search_cards(cards, columns, query=query, priority=priority, label=label)
 
 
 @app.post("/api/boards/{board_id}/cards", status_code=201)

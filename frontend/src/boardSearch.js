@@ -7,6 +7,7 @@ const FIELD_ALIASES = new Map([
   ["commits", "commit"],
   ["git_commit", "commit"],
   ["git_commits", "commit"],
+  ["content", "contains"],
 ]);
 
 export function filterCardsForBoard(cards, columns, filters) {
@@ -102,8 +103,13 @@ function matchesTerm(card, term, columnNamesById) {
   if (term.field === "has") return matchesHas(card, term.value);
   if (term.field === "file") return matchesFile(card, term.value);
   if (term.field === "commit") return matchesCommit(card, term.value);
+  if (term.field === "contains") return false;
   const values = searchValues(card, columnNamesById, term.field);
   return values.some((value) => normalize(value).includes(term.value));
+}
+
+export function requiresBackendSearch(query) {
+  return parseSearchQuery(query).some((term) => term.field === "contains");
 }
 
 function searchValues(card, columnNamesById, field) {
