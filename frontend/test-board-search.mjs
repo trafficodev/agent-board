@@ -58,6 +58,18 @@ describe("board search", () => {
     assert.deepEqual(search(cards, "priority:high label:requirement title:display"), ["high"]);
   });
 
+  it("matches specific files and commits", () => {
+    const cards = [
+      card({ id: "file", body: 'edited_files: ["frontend/src/App.tsx"]' }),
+      card({ id: "commit", body: 'git_commits: ["abc1234 Fix search"]' }),
+      card({ id: "other", body: 'edited_files: ["backend/main.py"]\ngit_commits: ["def5678 Other"]' }),
+    ];
+
+    assert.deepEqual(search(cards, 'file:"src/App.tsx"'), ["file"]);
+    assert.deepEqual(search(cards, "commit:abc1234"), ["commit"]);
+    assert.deepEqual(search(cards, "file:backend commit:def5678"), ["other"]);
+  });
+
   it("excludes negative terms", () => {
     const cards = [
       card({ id: "a", title: "session data backend" }),

@@ -1,6 +1,12 @@
 const FIELD_ALIASES = new Map([
   ["labels", "label"],
   ["type", "label"],
+  ["files", "file"],
+  ["edited_file", "file"],
+  ["edited_files", "file"],
+  ["commits", "commit"],
+  ["git_commit", "commit"],
+  ["git_commits", "commit"],
 ]);
 
 export function filterCardsForBoard(cards, columns, filters) {
@@ -94,6 +100,8 @@ function matchesQuery(card, terms, columnNamesById) {
 
 function matchesTerm(card, term, columnNamesById) {
   if (term.field === "has") return matchesHas(card, term.value);
+  if (term.field === "file") return matchesFile(card, term.value);
+  if (term.field === "commit") return matchesCommit(card, term.value);
   const values = searchValues(card, columnNamesById, term.field);
   return values.some((value) => normalize(value).includes(term.value));
 }
@@ -132,15 +140,34 @@ function searchValues(card, columnNamesById, field) {
 }
 
 function matchesHas(card, value) {
-  const body = normalize(card.body);
   if (value === "file" || value === "files" || value === "edited_file" || value === "edited_files") {
-    return body.includes("edited_files:") || /(^|\s|`)\/?[\w.-]+\/[\w./-]+/.test(card.body);
+    return hasFile(card);
   }
   if (value === "commit" || value === "commits" || value === "git_commit" || value === "git_commits") {
-    return body.includes("git_commits:") || /\b[0-9a-f]{7,40}\b/i.test(card.body);
+    return hasCommit(card);
   }
   if (value === "session" || value === "sessions") return (card.session_history ?? []).length > 0;
   return false;
+}
+
+function matchesFile(card, value) {
+  if (!hasFile(card)) return false;
+  return normalize(card.body).includes(value);
+}
+
+function matchesCommit(card, value) {
+  if (!hasCommit(card)) return false;
+  return normalize(card.body).includes(value);
+}
+
+function hasFile(card) {
+  const body = normalize(card.body);
+  return body.includes("edited_files:") || /(^|\s|`)\/?[\w.-]+\/[\w./-]+/.test(card.body);
+}
+
+function hasCommit(card) {
+  const body = normalize(card.body);
+  return body.includes("git_commits:") || /\b[0-9a-f]{7,40}\b/i.test(card.body);
 }
 
 function addAncestors(cardId, visibleIds, cardsById) {

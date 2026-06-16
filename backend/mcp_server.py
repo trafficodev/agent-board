@@ -166,6 +166,20 @@ TOOLS = [
         },
     ),
     Tool(
+        name="search_cards",
+        description="Search cards by text, quoted phrase, negation, fields, file, commit, session, priority, label, or hierarchy-visible matches",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "query": {"type": "string", "description": "Examples: file:frontend/src/App.tsx commit:abc1234 has:file has:commit -label:bug"},
+                "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                "label": {"type": "string"},
+            },
+            "required": ["board_id"],
+        },
+    ),
+    Tool(
         name="create_card",
         description="Create a new card (task) on a board. Optionally set parent_id to make it a sub-task.",
         inputSchema={
@@ -327,6 +341,13 @@ async def call_tool(name: str, arguments: dict):
                     if k in arguments:
                         filters[k] = arguments[k]
                 result = client.list_cards(arguments["board_id"], **filters)
+            case "search_cards":
+                result = client.search_cards(
+                    arguments["board_id"],
+                    query=arguments.get("query", ""),
+                    priority=arguments.get("priority"),
+                    label=arguments.get("label"),
+                )
             case "create_card":
                 result = client.create_card(
                     arguments["board_id"],

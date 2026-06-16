@@ -15,6 +15,8 @@ import json
 import urllib.parse
 from pathlib import Path
 
+import search_logic
+
 BASE_URL = os.environ.get("AGENT_BOARD_URL", "http://localhost:8001")
 _API_PATH = Path(__file__).resolve().parent
 _PROJECT_ROOT = _API_PATH.parent
@@ -142,6 +144,12 @@ def list_cards(board_id: str, **filters) -> list[dict]:
     if params:
         path += f"?{params}"
     return _req("GET", path)
+
+
+def search_cards(board_id: str, query: str = "", priority: str | None = None, label: str | None = None) -> list[dict]:
+    board = get_board(board_id)
+    cards = list_cards(board_id)
+    return search_logic.search_cards(cards, board.get("columns", []), query=query, priority=priority, label=label)
 
 
 def create_card(board_id: str, title: str, column_id: str, body: str = "",

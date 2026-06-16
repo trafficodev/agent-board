@@ -20,6 +20,7 @@ UI_CAPABILITIES = {
     "update_column",
     "delete_column",
     "list_cards",
+    "search_cards",
     "create_card",
     "get_card",
     "update_card",

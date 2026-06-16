@@ -93,6 +93,20 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
 
+    search_cards = sub.add_parser("search_cards")
+    search_cards.add_argument("board_id")
+    search_cards.add_argument("--query", default="")
+    search_cards.add_argument("--priority")
+    search_cards.add_argument("--label")
+    search_cards.set_defaults(
+        func=lambda args: client.search_cards(
+            args.board_id,
+            query=args.query,
+            priority=args.priority,
+            label=args.label,
+        )
+    )
+
     create_card = sub.add_parser("create_card")
     create_card.add_argument("board_id")
     create_card.add_argument("title")
