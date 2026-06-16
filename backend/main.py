@@ -2,8 +2,10 @@ import re
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 import board_store as bs
+import canvas_sync
 import card_store as cs
 import search_logic
 from models import (
@@ -48,6 +50,31 @@ def _board_or_404(board_id: str):
     return board
 
 
+def _sync_board_if_enabled(board_id: str) -> None:
+    canvas_sync.sync_if_enabled(board_id)
+
+
+class ImportCard(BaseModel):
+    external_id: str = ""
+    title: str
+    body: str = ""
+    column: str
+    parent_external_id: str | None = None
+    priority: str = "medium"
+    labels: list[str] = Field(default_factory=list)
+
+
+class ImportBoard(BaseModel):
+    name: str
+    description: str = ""
+    columns: list[str]
+    cards: list[ImportCard] = Field(default_factory=list)
+
+
+class CanvasSyncEnable(BaseModel):
+    canvas_api_url: str | None = None
+
+
 # --- Boards ---
 
 @app.get("/api/boards")
@@ -70,14 +97,85 @@ def api_update_board(board_id: str, body: UpdateBoard):
     board = bs.update_board(board_id, **body.model_dump(exclude_none=True))
     if not board:
         raise HTTPException(404, "Board not found")
+    _sync_board_if_enabled(board_id)
     return board
 
 
 @app.delete("/api/boards/{board_id}")
 def api_delete_board(board_id: str):
+    _board_or_404(board_id)
+    canvas_sync.disable_sync(board_id)
     if not bs.delete_board(board_id):
         raise HTTPException(404, "Board not found")
     return {"ok": True}
+
+
+@app.post("/api/import/board", status_code=201)
+def api_import_board(body: ImportBoard):
+    if not body.columns:
+        raise HTTPException(400, "columns must not be empty")
+    board = bs.create_board(body.name, body.description, body.columns)
+    columns = {col.name: col.id for col in board.columns}
+    created_by_external_id: dict[str, str] = {}
+    pending = list(body.cards)
+    while pending:
+        remaining: list[ImportCard] = []
+        created_any = False
+        for card in pending:
+            column_id = columns.get(card.column)
+            if not column_id:
+                raise HTTPException(400, f"unknown column: {card.column}")
+            parent_id = None
+            if card.parent_external_id:
+                parent_id = created_by_external_id.get(card.parent_external_id)
+                if not parent_id:
+                    remaining.append(card)
+                    continue
+            created = cs.create_card(board.id, CreateCard(
+                title=card.title,
+                body=card.body,
+                column_id=column_id,
+                parent_id=parent_id,
+                priority=card.priority,
+                labels=card.labels,
+            ))
+            if not created:
+                raise HTTPException(400, f"failed to create card: {card.title}")
+            if card.external_id:
+                created_by_external_id[card.external_id] = created.id
+            created_any = True
+        if remaining and not created_any:
+            missing = sorted({c.parent_external_id for c in remaining if c.parent_external_id})
+            raise HTTPException(400, f"unknown parent_external_id values: {missing}")
+        pending = remaining
+    return board
+
+
+@app.get("/api/boards/{board_id}/canvas-sync")
+def api_get_canvas_sync(board_id: str):
+    _board_or_404(board_id)
+    return canvas_sync.get_sync_status(board_id)
+
+
+@app.post("/api/boards/{board_id}/canvas-sync/enable")
+def api_enable_canvas_sync(board_id: str, body: CanvasSyncEnable | None = None):
+    _board_or_404(board_id)
+    try:
+        return canvas_sync.enable_sync(board_id, body.canvas_api_url if body else None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/boards/{board_id}/canvas-sync/disable")
+def api_disable_canvas_sync(board_id: str):
+    _board_or_404(board_id)
+    return canvas_sync.disable_sync(board_id)
+
+
+@app.post("/api/boards/{board_id}/canvas-sync/sync")
+def api_sync_canvas(board_id: str):
+    _board_or_404(board_id)
+    return canvas_sync.sync_board(board_id)
 
 
 # --- Columns ---
@@ -88,6 +186,7 @@ def api_add_column(board_id: str, body: CreateColumn):
     col = bs.add_column(board_id, body.name, body.position)
     if not col:
         raise HTTPException(400, "Failed to add column")
+    _sync_board_if_enabled(board_id)
     return col
 
 
@@ -98,6 +197,7 @@ def api_update_column(board_id: str, column_id: str, body: UpdateColumn):
     col = bs.update_column(board_id, column_id, **body.model_dump(exclude_none=True))
     if not col:
         raise HTTPException(404, "Column not found")
+    _sync_board_if_enabled(board_id)
     return col
 
 
@@ -107,15 +207,16 @@ def api_delete_column(board_id: str, column_id: str):
     _validate_id(column_id, "column_id")
     if not bs.delete_column(board_id, column_id):
         raise HTTPException(404, "Column not found")
+    _sync_board_if_enabled(board_id)
     return {"ok": True}
 
 
 # --- Cards ---
 
 @app.get("/api/boards/{board_id}/cards")
-def api_list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None):
+def api_list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None, parent_id: str | None = None):
     _board_or_404(board_id)
-    return cs.list_cards(board_id, priority=priority, label=label, column_id=column_id)
+    return cs.list_cards(board_id, priority=priority, label=label, column_id=column_id, parent_id=parent_id)
 
 
 @app.get("/api/boards/{board_id}/cards/search")
@@ -132,6 +233,7 @@ def api_create_card(board_id: str, body: CreateCard):
     card = cs.create_card(board_id, body)
     if not card:
         raise HTTPException(400, "Invalid column_id or board")
+    _sync_board_if_enabled(board_id)
     return card
 
 
@@ -152,6 +254,7 @@ def api_update_card(board_id: str, card_id: str, body: UpdateCard):
     card = cs.update_card(board_id, card_id, body)
     if not card:
         raise HTTPException(404, "Card not found")
+    _sync_board_if_enabled(board_id)
     return card
 
 
@@ -162,6 +265,7 @@ def api_move_card(board_id: str, card_id: str, body: MoveCard):
     card = cs.move_card(board_id, card_id, body)
     if not card:
         raise HTTPException(404, "Card or target column not found")
+    _sync_board_if_enabled(board_id)
     return card
 
 
@@ -171,6 +275,7 @@ def api_delete_card(board_id: str, card_id: str):
     _validate_id(card_id, "card_id")
     if not cs.delete_card(board_id, card_id):
         raise HTTPException(404, "Card not found")
+    _sync_board_if_enabled(board_id)
     return {"ok": True}
 
 
@@ -181,6 +286,7 @@ def api_add_session(board_id: str, card_id: str, body: AddSession):
     card = cs.add_session(board_id, card_id, body)
     if not card:
         raise HTTPException(404, "Card not found")
+    _sync_board_if_enabled(board_id)
     return card
 
 

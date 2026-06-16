@@ -19,6 +19,7 @@ export interface Card {
   title: string;
   body: string;
   column_id: string;
+  parent_id: string | null;
   position: number;
   priority: "critical" | "high" | "medium" | "low";
   labels: string[];
@@ -41,4 +42,12 @@ export interface Event {
   type: string;
   actor: string;
   detail: string;
+}
+
+export interface CanvasSyncStatus {
+  enabled: boolean;
+  canvas_board_id: string | null;
+  canvas_api_url: string;
+  last_synced_at: string | null;
+  last_error: string | null;
 }

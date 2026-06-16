@@ -43,6 +43,7 @@ class Card(BaseModel):
     title: str
     body: str = ""
     column_id: str
+    parent_id: str | None = None  # null = top-level card
     position: int = 0
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
@@ -98,6 +99,7 @@ class CreateCard(BaseModel):
     title: str
     body: str = ""
     column_id: str
+    parent_id: str | None = None  # null = top-level card
     position: int | None = None  # append to end of column if None
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
@@ -107,6 +109,7 @@ class UpdateCard(BaseModel):
     title: str | None = None
     body: str | None = None
     column_id: str | None = None
+    parent_id: str | None = None
     position: int | None = None
     priority: Literal["critical", "high", "medium", "low"] | None = None
     labels: list[str] | None = None

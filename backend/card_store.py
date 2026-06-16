@@ -69,7 +69,7 @@ def _locked_write(board_id: str, cards: list[Card], event: Event | None = None) 
 
 # --- Cards ---
 
-def list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None) -> list[Card]:
+def list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None, parent_id: str | None = None) -> list[Card]:
     cards = _read_cards(board_id)
     if priority:
         cards = [c for c in cards if c.priority == priority]
@@ -77,6 +77,8 @@ def list_cards(board_id: str, priority: str | None = None, label: str | None = N
         cards = [c for c in cards if label.lower() in [l.lower() for l in c.labels]]
     if column_id:
         cards = [c for c in cards if c.column_id == column_id]
+    if parent_id is not None:
+        cards = [c for c in cards if c.parent_id == parent_id]
     return sorted(cards, key=lambda c: c.position)
 
 
@@ -105,6 +107,7 @@ def create_card(board_id: str, data: "UpdateCard") -> Card | None:
         title=data.title,
         body=data.body,
         column_id=data.column_id,
+        parent_id=data.parent_id,
         position=pos,
         priority=data.priority,
         labels=labels,
@@ -126,6 +129,8 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
         card.title = data.title
     if data.body is not None:
         card.body = data.body
+    if "parent_id" in data.model_fields_set:
+        card.parent_id = data.parent_id
     old_col = card.column_id
     col_changed = False
     if data.column_id is not None:
@@ -150,6 +155,16 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
     return card
 
 
+def _collect_descendants(cards: list[Card], parent_id: str) -> list[Card]:
+    """Recursively collect all descendants of a card."""
+    result: list[Card] = []
+    for c in cards:
+        if c.parent_id == parent_id:
+            result.append(c)
+            result.extend(_collect_descendants(cards, c.id))
+    return result
+
+
 def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     board = get_board(board_id)
     if not board:
@@ -168,6 +183,12 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     col_cards = [c for c in cards if c.column_id == data.column_id and c.id != card_id]
     pos = data.position if data.position is not None else len(col_cards)
     card.position = min(pos, len(col_cards))
+
+    # Cascade column move to all descendants
+    if old_col != data.column_id:
+        for desc in _collect_descendants(cards, card_id):
+            desc.column_id = data.column_id
+            desc.updated_at = _now()
 
     card.updated_at = _now()
     _reindex_column(cards, data.column_id)
