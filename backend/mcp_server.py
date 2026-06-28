@@ -189,9 +189,11 @@ TOOLS = [
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Description"},
                 "column_id": {"type": "string", "description": "Column to place the card in. Use list_boards to see column IDs."},
+                "external_id": {"type": "string", "description": "Stable external identity for integrations."},
                 "parent_id": {"type": "string", "description": "Parent card ID for sub-tasks. Omit for top-level."},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "labels": {"type": "array", "items": {"type": "string"}},
+                "metadata": {"type": "object"},
             },
             "required": ["board_id", "title", "column_id"],
         },
@@ -217,10 +219,12 @@ TOOLS = [
                 "board_id": {"type": "string"},
                 "card_id": {"type": "string"},
                 "title": {"type": "string"},
+                "external_id": {"type": "string"},
                 "body": {"type": "string"},
                 "parent_id": {"type": "string"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "labels": {"type": "array", "items": {"type": "string"}},
+                "metadata": {"type": "object"},
             },
             "required": ["board_id", "card_id"],
         },
@@ -357,6 +361,8 @@ async def call_tool(name: str, arguments: dict):
                     parent_id=arguments.get("parent_id"),
                     priority=arguments.get("priority", "medium"),
                     labels=arguments.get("labels"),
+                    external_id=arguments.get("external_id", ""),
+                    metadata=arguments.get("metadata"),
                 )
             case "get_card":
                 result = client.get_card(arguments["board_id"], arguments["card_id"])

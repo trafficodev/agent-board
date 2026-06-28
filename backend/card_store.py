@@ -87,7 +87,7 @@ def get_card(board_id: str, card_id: str) -> Card | None:
     return next((c for c in cards if c.id == card_id), None)
 
 
-def create_card(board_id: str, data: "UpdateCard") -> Card | None:
+def create_card(board_id: str, data: "CreateCard") -> Card | None:
     from models import CreateCard
     board = get_board(board_id)
     if not board:
@@ -104,6 +104,7 @@ def create_card(board_id: str, data: "UpdateCard") -> Card | None:
 
     card = Card(
         board_id=board_id,
+        external_id=data.external_id,
         title=data.title,
         body=data.body,
         column_id=data.column_id,
@@ -111,6 +112,7 @@ def create_card(board_id: str, data: "UpdateCard") -> Card | None:
         position=pos,
         priority=data.priority,
         labels=labels,
+        metadata=data.metadata,
     )
     cards.append(card)
     _reindex_column(cards, data.column_id)
@@ -125,6 +127,8 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
     if not card:
         return None
 
+    if data.external_id is not None:
+        card.external_id = data.external_id
     if data.title is not None:
         card.title = data.title
     if data.body is not None:
@@ -144,6 +148,8 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
         card.priority = data.priority
     if data.labels is not None:
         card.labels = [l.lower() for l in data.labels]
+    if data.metadata is not None:
+        card.metadata = dict(data.metadata)
 
     if col_changed or data.position is not None:
         _reindex_column(cards, card.column_id)

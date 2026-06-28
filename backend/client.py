@@ -154,10 +154,12 @@ def search_cards(board_id: str, query: str = "", priority: str | None = None, la
 
 def create_card(board_id: str, title: str, column_id: str, body: str = "",
                 parent_id: str | None = None, priority: str = "medium",
-                labels: list[str] | None = None) -> dict:
+                labels: list[str] | None = None, external_id: str = "",
+                metadata: dict | None = None) -> dict:
     return _req("POST", f"/api/boards/{board_id}/cards", {
-        "title": title, "body": body, "column_id": column_id,
+        "external_id": external_id, "title": title, "body": body, "column_id": column_id,
         "parent_id": parent_id, "priority": priority, "labels": labels or [],
+        "metadata": metadata or {},
     })
 
 

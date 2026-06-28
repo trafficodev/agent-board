@@ -16,11 +16,13 @@ def card(card_id, **overrides):
         "id": card_id,
         "title": "",
         "body": "",
+        "external_id": "",
         "column_id": "features",
         "parent_id": None,
         "position": 0,
         "priority": "medium",
         "labels": [],
+        "metadata": {},
         "session_history": [],
     }
     data.update(overrides)
@@ -73,19 +75,24 @@ class SearchLogicTest(unittest.TestCase):
 
     def test_contains_searches_all_card_fields(self):
         cards = [
+            card("external", external_id="assistant:sid-1"),
             card("title", title="Render session data"),
             card("body", body="collapsed preview"),
             card("label", labels=["bug_report"]),
             card("priority", priority="critical"),
+            card("metadata", metadata={"turn_id": "assistant-turn-1", "edited_files": ["frontend/src/Meta.tsx"]}),
             card("session", session_history=[{"session_id": "sid-123", "system": "codex", "action": "audit", "outcome": "success", "timestamp": "now"}]),
             card("file", body='edited_files: ["frontend/src/App.tsx"]'),
             card("commit", body='git_commits: ["abc1234 Fix search"]'),
         ]
 
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "external_id:sid-1")], ["external"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:session")], ["title", "session"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:preview")], ["body"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:bug_report")], ["label"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:critical")], ["priority"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "metadata:assistant-turn-1")], ["metadata"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "file:Meta.tsx")], ["metadata"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:App.tsx")], ["file"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:abc1234")], ["commit"])
 

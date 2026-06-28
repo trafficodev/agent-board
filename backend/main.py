@@ -62,6 +62,7 @@ class ImportCard(BaseModel):
     parent_external_id: str | None = None
     priority: str = "medium"
     labels: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
 
 
 class ImportBoard(BaseModel):
@@ -132,12 +133,14 @@ def api_import_board(body: ImportBoard):
                     remaining.append(card)
                     continue
             created = cs.create_card(board.id, CreateCard(
+                external_id=card.external_id,
                 title=card.title,
                 body=card.body,
                 column_id=column_id,
                 parent_id=parent_id,
                 priority=card.priority,
                 labels=card.labels,
+                metadata=card.metadata,
             ))
             if not created:
                 raise HTTPException(400, f"failed to create card: {card.title}")

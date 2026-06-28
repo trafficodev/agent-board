@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,7 @@ class SessionEntry(BaseModel):
 class Card(BaseModel):
     id: str = Field(default_factory=_uid)
     board_id: str = ""
+    external_id: str = ""
     title: str
     body: str = ""
     column_id: str
@@ -47,6 +48,7 @@ class Card(BaseModel):
     position: int = 0
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     session_history: list[SessionEntry] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -96,6 +98,7 @@ class UpdateColumn(BaseModel):
 
 
 class CreateCard(BaseModel):
+    external_id: str = ""
     title: str
     body: str = ""
     column_id: str
@@ -103,9 +106,11 @@ class CreateCard(BaseModel):
     position: int | None = None  # append to end of column if None
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpdateCard(BaseModel):
+    external_id: str | None = None
     title: str | None = None
     body: str | None = None
     column_id: str | None = None
@@ -113,6 +118,7 @@ class UpdateCard(BaseModel):
     position: int | None = None
     priority: Literal["critical", "high", "medium", "low"] | None = None
     labels: list[str] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class MoveCard(BaseModel):

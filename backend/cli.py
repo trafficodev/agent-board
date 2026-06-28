@@ -115,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
     create_card.add_argument("--parent-id")
     create_card.add_argument("--priority", default="medium")
     create_card.add_argument("--labels", nargs="*")
+    create_card.add_argument("--external-id", default="")
+    create_card.add_argument("--metadata-json", type=_json_arg, default={})
     create_card.set_defaults(
         func=lambda args: client.create_card(
             args.board_id,
@@ -124,6 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
             parent_id=args.parent_id,
             priority=args.priority,
             labels=args.labels,
+            external_id=args.external_id,
+            metadata=args.metadata_json,
         )
     )
 
@@ -142,6 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
     update_card.add_argument("--position", type=int)
     update_card.add_argument("--priority")
     update_card.add_argument("--labels", nargs="*")
+    update_card.add_argument("--external-id")
+    update_card.add_argument("--metadata-json", type=_json_arg)
     update_card.set_defaults(
         func=lambda args: client.update_card(
             args.board_id,
@@ -153,6 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
             position=args.position,
             priority=args.priority,
             labels=args.labels,
+            external_id=args.external_id,
+            metadata=args.metadata_json,
         )
     )
 

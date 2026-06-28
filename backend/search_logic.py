@@ -18,6 +18,7 @@ FIELD_ALIASES = {
     "git_commit": "commit",
     "git_commits": "commit",
     "content": "contains",
+    "external": "external_id",
 }
 
 FILE_RE = re.compile(r"(^|\s|`)\/?[\w.-]+\/[\w./-]+")
@@ -128,24 +129,29 @@ def _search_values(card: dict[str, Any], column_names_by_id: dict[str, str], fie
     for entry in card.get("session_history") or []:
         sessions.extend(["session", entry.get("session_id", ""), entry.get("system", ""), entry.get("action", ""), entry.get("outcome") or "", entry.get("timestamp", "")])
 
+    metadata_values = _flatten_metadata(card.get("metadata") or {})
     scoped = {
+        "external_id": [card.get("external_id", "")],
         "title": [card.get("title", "")],
         "body": [card.get("body", "")],
         "label": card.get("labels", []),
         "priority": [card.get("priority", "")],
         "column": [column_names_by_id.get(card.get("column_id"), card.get("column_id", ""))],
         "id": [card.get("id", "")],
+        "metadata": metadata_values,
         "session": sessions,
     }
     if field in scoped:
         return scoped[field]
     return [
         card.get("id", ""),
+        card.get("external_id", ""),
         card.get("title", ""),
         card.get("body", ""),
         card.get("priority", ""),
         column_names_by_id.get(card.get("column_id"), card.get("column_id", "")),
         *card.get("labels", []),
+        *metadata_values,
         *sessions,
     ]
 
@@ -164,14 +170,14 @@ def _matches_file(card: dict[str, Any], value: str) -> bool:
     body = card.get("body", "")
     if not _has_file(card):
         return False
-    return value in _normalize(body)
+    return value in _normalize(body) or any(value in _normalize(item) for item in _metadata_values(card, "edited_files"))
 
 
 def _matches_commit(card: dict[str, Any], value: str) -> bool:
     body = card.get("body", "")
     if not _has_commit(card):
         return False
-    return value in _normalize(body)
+    return value in _normalize(body) or any(value in _normalize(item) for item in _metadata_values(card, "git_commits"))
 
 
 def _matches_contains(card: dict[str, Any], value: str, column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
@@ -228,6 +234,14 @@ def _existing_edited_file_paths(card: dict[str, Any]) -> list[Path]:
 
 
 def _metadata_values(card: dict[str, Any], key: str) -> list[str]:
+    structured = card.get("metadata") or {}
+    if isinstance(structured, dict):
+        direct = structured.get(key)
+        if isinstance(direct, list):
+            return [str(value) for value in direct if value not in (None, "")]
+        if direct not in (None, ""):
+            return [str(direct)]
+
     prefix = f"{key}:"
     values: list[str] = []
     for line in str(card.get("body", "")).splitlines():
@@ -245,16 +259,30 @@ def _metadata_values(card: dict[str, Any], key: str) -> list[str]:
     return values
 
 
+def _flatten_metadata(value: Any) -> list[str]:
+    values: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            values.append(str(key))
+            values.extend(_flatten_metadata(nested))
+    elif isinstance(value, list):
+        for item in value:
+            values.extend(_flatten_metadata(item))
+    elif value not in (None, ""):
+        values.append(str(value))
+    return values
+
+
 def _has_file(card: dict[str, Any]) -> bool:
     body = card.get("body", "")
     normalized = _normalize(body)
-    return "edited_files:" in normalized or bool(FILE_RE.search(body))
+    return bool(_metadata_values(card, "edited_files")) or "edited_files:" in normalized or bool(FILE_RE.search(body))
 
 
 def _has_commit(card: dict[str, Any]) -> bool:
     body = card.get("body", "")
     normalized = _normalize(body)
-    return "git_commits:" in normalized or bool(COMMIT_RE.search(body))
+    return bool(_metadata_values(card, "git_commits")) or "git_commits:" in normalized or bool(COMMIT_RE.search(body))
 
 
 def _add_ancestors(card_id: str, visible_ids: set[str], cards_by_id: dict[str, dict[str, Any]]) -> None:
