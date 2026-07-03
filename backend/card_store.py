@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from models import (
@@ -16,6 +17,9 @@ from models import (
 from paths import board_path, events_path
 
 from board_store import get_board
+
+CLOSED_CARD_TTL = timedelta(days=3)
+CLOSED_AT_METADATA_KEY = "closed_at"
 
 
 def _cards_path(board_id: str) -> Path:
@@ -67,9 +71,60 @@ def _locked_write(board_id: str, cards: list[Card], event: Event | None = None) 
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def _closed_column_id(board_id: str) -> str | None:
+    board = get_board(board_id)
+    if not board:
+        return None
+    return next((column.id for column in board.columns if column.name.lower() == "closed"), None)
+
+
+def _stamp_closed_state(card: Card, closed_column_id: str | None, now: datetime) -> None:
+    if not closed_column_id:
+        return
+    if card.column_id == closed_column_id:
+        card.metadata.setdefault(CLOSED_AT_METADATA_KEY, now.isoformat())
+        return
+    card.metadata.pop(CLOSED_AT_METADATA_KEY, None)
+
+
+def _closed_at(card: Card) -> datetime:
+    value = card.metadata.get(CLOSED_AT_METADATA_KEY)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return card.updated_at if card.updated_at.tzinfo else card.updated_at.replace(tzinfo=timezone.utc)
+
+
+def _prune_expired_closed_cards(board_id: str) -> None:
+    closed_column_id = _closed_column_id(board_id)
+    if not closed_column_id:
+        return
+
+    cards = _read_cards(board_id)
+    now = _now()
+    cutoff = now - CLOSED_CARD_TTL
+    retained = [
+        card for card in cards
+        if card.column_id != closed_column_id or _closed_at(card) > cutoff
+    ]
+    if len(retained) == len(cards):
+        return
+
+    _reindex_column(retained, closed_column_id)
+    _locked_write(
+        board_id,
+        retained,
+        Event(type="closed_cards_pruned", detail=f"{len(cards) - len(retained)} closed cards expired"),
+    )
+
+
 # --- Cards ---
 
 def list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None, parent_id: str | None = None) -> list[Card]:
+    _prune_expired_closed_cards(board_id)
     cards = _read_cards(board_id)
     if priority:
         cards = [c for c in cards if c.priority == priority]
@@ -83,6 +138,7 @@ def list_cards(board_id: str, priority: str | None = None, label: str | None = N
 
 
 def get_card(board_id: str, card_id: str) -> Card | None:
+    _prune_expired_closed_cards(board_id)
     cards = _read_cards(board_id)
     return next((c for c in cards if c.id == card_id), None)
 
@@ -97,6 +153,7 @@ def create_card(board_id: str, data: "CreateCard") -> Card | None:
         return None
 
     cards = _read_cards(board_id)
+    now = _now()
     col_cards = [c for c in cards if c.column_id == data.column_id]
     pos = data.position if data.position is not None else len(col_cards)
     pos = min(pos, len(col_cards))
@@ -114,6 +171,7 @@ def create_card(board_id: str, data: "CreateCard") -> Card | None:
         labels=labels,
         metadata=data.metadata,
     )
+    _stamp_closed_state(card, _closed_column_id(board_id), now)
     cards.append(card)
     _reindex_column(cards, data.column_id)
     _locked_write(board_id, cards, Event(type="card_created", detail=card.title))
@@ -127,6 +185,9 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
     if not card:
         return None
 
+    closed_column_id = _closed_column_id(board_id)
+    now = _now()
+    existing_closed_at = card.metadata.get(CLOSED_AT_METADATA_KEY)
     if data.external_id is not None:
         card.external_id = data.external_id
     if data.title is not None:
@@ -150,13 +211,16 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
         card.labels = [l.lower() for l in data.labels]
     if data.metadata is not None:
         card.metadata = dict(data.metadata)
+        if existing_closed_at is not None and card.column_id == closed_column_id:
+            card.metadata[CLOSED_AT_METADATA_KEY] = existing_closed_at
 
     if col_changed or data.position is not None:
         _reindex_column(cards, card.column_id)
         if col_changed and old_col != card.column_id:
             _reindex_column(cards, old_col)
 
-    card.updated_at = _now()
+    _stamp_closed_state(card, closed_column_id, now)
+    card.updated_at = now
     _locked_write(board_id, cards, Event(type="card_updated", detail=card.title))
     return card
 
@@ -183,6 +247,8 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     if not card:
         return None
 
+    closed_column_id = _closed_column_id(board_id)
+    now = _now()
     old_col = card.column_id
     card.column_id = data.column_id
 
@@ -194,9 +260,11 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     if old_col != data.column_id:
         for desc in _collect_descendants(cards, card_id):
             desc.column_id = data.column_id
-            desc.updated_at = _now()
+            _stamp_closed_state(desc, closed_column_id, now)
+            desc.updated_at = now
 
-    card.updated_at = _now()
+    _stamp_closed_state(card, closed_column_id, now)
+    card.updated_at = now
     _reindex_column(cards, data.column_id)
     if old_col != data.column_id:
         _reindex_column(cards, old_col)
