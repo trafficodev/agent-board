@@ -3,7 +3,7 @@ import unittest
 
 import cli
 import client
-import mcp_server
+from mcp_tools import GROUPS
 
 
 UI_CAPABILITIES = {
@@ -38,12 +38,19 @@ class CapabilityAlignmentTest(unittest.TestCase):
             for name, value in inspect.getmembers(client, inspect.isfunction)
             if not name.startswith("_")
         }
-        mcp_capabilities = {tool.name for tool in mcp_server.TOOLS}
+        mcp_capabilities = {tool.name for group in GROUPS.values() for tool in group.TOOLS}
         cli_capabilities = set(cli.build_parser()._subparsers._group_actions[0].choices)
 
         self.assertEqual(set(), UI_CAPABILITIES - sdk_capabilities)
         self.assertEqual(set(), UI_CAPABILITIES - mcp_capabilities)
         self.assertEqual(set(), UI_CAPABILITIES - cli_capabilities)
+
+    def test_no_tool_registered_in_more_than_one_group(self):
+        seen = []
+        for group in GROUPS.values():
+            seen.extend(tool.name for tool in group.TOOLS)
+        duplicates = {name for name in seen if seen.count(name) > 1}
+        self.assertEqual(set(), duplicates)
 
 
 if __name__ == "__main__":

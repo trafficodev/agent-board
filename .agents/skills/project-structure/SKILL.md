@@ -15,7 +15,7 @@ agent-board is a local board application for coordinating agents. The frontend i
 - Frontend API/types: `frontend/src/api.ts`, `frontend/src/types.ts`
 - Backend HTTP app: `backend/main.py`
 - Durable board/card state: `backend/board_store.py`, `backend/card_store.py`, `backend/models.py`
-- Canvas/MCP/client integrations: `backend/canvas_sync.py`, `backend/mcp_server.py`, `backend/client.py`
+- Canvas/MCP/client integrations: `backend/canvas_sync.py`, `backend/client.py`, `backend/mcp_server.py` (generic stdio runner, launched with a group name), `backend/mcp_tools/` (boards/canvas/cards/sessions tool groups — one MCP server per group)
 - State/path helpers: `backend/paths.py`
 - Run entrypoint: `run.sh`
 
