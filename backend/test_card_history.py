@@ -128,3 +128,37 @@ class CardHistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestSessionAttributionTest(unittest.TestCase):
+    """The API server is shared and belongs to no session, so HTTP callers
+    carry their identity in a header that the store reads per request."""
+
+    def setUp(self):
+        os.environ.pop("BETTER_CLAUDE_APP_SESSION_ID", None)
+        os.environ.pop("BETTER_AGENT_APP_SESSION_ID", None)
+        self.board = board_store.create_board("R", "", ["Open"])
+
+    def test_request_session_is_used_when_the_process_has_none(self):
+        token = card_store.request_session.set("sess-http")
+        try:
+            card = card_store.create_card(
+                self.board.id, CreateCard(title="via api", column_id=self.board.columns[0].id)
+            )
+        finally:
+            card_store.request_session.reset(token)
+
+        self.assertEqual(card.session_history[0].session_id, "sess-http")
+
+    def test_request_session_wins_over_process_env(self):
+        os.environ["BETTER_AGENT_APP_SESSION_ID"] = "sess-env"
+        token = card_store.request_session.set("sess-http")
+        try:
+            card = card_store.create_card(
+                self.board.id, CreateCard(title="both", column_id=self.board.columns[0].id)
+            )
+        finally:
+            card_store.request_session.reset(token)
+            os.environ.pop("BETTER_AGENT_APP_SESSION_ID", None)
+
+        self.assertEqual(card.session_history[0].session_id, "sess-http")

@@ -3,6 +3,7 @@
 import fcntl
 import json
 import os
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -32,16 +33,24 @@ _TRACKED_FIELDS = (
 )
 
 
+# Set for the duration of one API request from the caller's session header.
+request_session: ContextVar[str] = ContextVar("agent_board_request_session", default="")
+
+
 def acting_session() -> tuple[str, str]:
     """The Better Agent session driving this call, as ``(session_id, system)``.
 
-    Better Agent spawns an MCP server per session with the id in its env, so a
-    tool call attributes itself with no caller cooperation. The standalone API
-    and the shared extension-host process have no session in scope; those
-    changes are recorded with an empty session_id — unknown authorship, never
-    guessed authorship."""
+    Two ways in. In-process callers (an MCP server importing the store, a test)
+    are identified by the session id Better Agent puts in their environment.
+    Callers that reach the shared API server over HTTP carry it in a request
+    header instead, because that server process belongs to no session — it is
+    set per request into ``request_session``.
+
+    Anything with neither is recorded with an empty session_id: unknown
+    authorship, never guessed authorship."""
     session_id = (
-        os.environ.get("BETTER_AGENT_APP_SESSION_ID")
+        request_session.get()
+        or os.environ.get("BETTER_AGENT_APP_SESSION_ID")
         or os.environ.get("BETTER_CLAUDE_APP_SESSION_ID")
         or ""
     ).strip()

@@ -38,6 +38,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Attribution only: this server is shared, so the calling session travels in a
+# header and is bound to the request's context for the store to read. It is
+# caller-asserted and grants nothing — never treat it as authentication.
+_SESSION_HEADER = "X-Better-Agent-Session"
+_MAX_SESSION_ID = 200
+
+
+@app.middleware("http")
+async def _bind_calling_session(request, call_next):
+    raw = (request.headers.get(_SESSION_HEADER) or "").strip()
+    token = cs.request_session.set(raw[:_MAX_SESSION_ID] if raw.isprintable() else "")
+    try:
+        return await call_next(request)
+    finally:
+        cs.request_session.reset(token)
+
 
 def _validate_id(value: str, name: str = "id") -> str:
     if not _ID_RE.match(value):

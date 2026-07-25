@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 BASE_URL = os.environ.get("AGENT_BOARD_URL", "http://localhost:8001")
+SESSION_HEADER = "X-Better-Agent-Session"
 _API_PATH = Path(__file__).resolve().parent
 _BACKEND_DIR = _API_PATH
 _STARTUP_ATTEMPTS = 50
@@ -168,7 +169,18 @@ def _req(method: str, path: str, body: dict | None = None) -> dict | list:
     ensure_server()
     url = f"{_normalized_base_url()}{path}"
     data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method=method)
+    headers = {"Content-Type": "application/json"}
+    # The MCP server knows which Better Agent session is calling; the API
+    # server is shared and does not. Forward the identity so card history is
+    # attributed to the session that actually made the change.
+    session_id = (
+        os.environ.get("BETTER_AGENT_APP_SESSION_ID")
+        or os.environ.get("BETTER_CLAUDE_APP_SESSION_ID")
+        or ""
+    ).strip()
+    if session_id:
+        headers[SESSION_HEADER] = session_id
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
