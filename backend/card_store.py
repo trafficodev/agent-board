@@ -284,6 +284,10 @@ def delete_card(board_id: str, card_id: str) -> bool:
     cards = [c for c in cards if c.id != card_id]
     _reindex_column(cards, col_id)
     _locked_write(board_id, cards, Event(type="card_deleted", detail=card_id))
+    # Same orphan-cleanup pattern board_store.delete_column already applies
+    # to cards -- a deleted card must not leave dangling edges behind.
+    from edge_store import delete_edges_for_card
+    delete_edges_for_card(board_id, card_id)
     return True
 
 

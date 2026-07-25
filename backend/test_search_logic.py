@@ -5,6 +5,12 @@ from pathlib import Path
 from search_logic import parse_search_query, search_cards
 
 
+def edge(edge_id, from_card_id, to_card_id, **overrides):
+    data = {"id": edge_id, "from_card_id": from_card_id, "to_card_id": to_card_id, "type": "relates_to", "label": ""}
+    data.update(overrides)
+    return data
+
+
 COLUMNS = [
     {"id": "features", "name": "Features"},
     {"id": "bugs", "name": "Bug Reports"},
@@ -95,6 +101,88 @@ class SearchLogicTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "file:Meta.tsx")], ["metadata"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:App.tsx")], ["file"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "contains:abc1234")], ["commit"])
+
+
+    def test_regex_value_matches_pattern_not_substring(self):
+        cards = [
+            card("fix", title="Fix login bug"),
+            card("feat", title="Add login button"),
+            card("unrelated", title="Refactor tests"),
+        ]
+
+        self.assertEqual(
+            [item["id"] for item in search_cards(cards, COLUMNS, "title:/^Fix.*bug$/")],
+            ["fix"],
+        )
+        self.assertEqual(
+            [item["id"] for item in search_cards(cards, COLUMNS, "/login/")],
+            ["fix", "feat"],
+        )
+
+    def test_regex_case_insensitive_flag(self):
+        cards = [card("a", title="URGENT: fix now")]
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "title:/urgent/")], [])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "title:/urgent/i")], ["a"])
+
+    def test_invalid_regex_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            parse_search_query("title:/[unclosed/")
+
+    def test_contains_supports_regex_against_referenced_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir)
+            target = project / "frontend/src/App.tsx"
+            target.parent.mkdir(parents=True)
+            target.write_text("function renderSessionData() { return 42; }\n")
+
+            cards = [
+                card("match", body=f'projects: ["{project}"]\nedited_files: ["frontend/src/App.tsx"]'),
+            ]
+
+            self.assertEqual(
+                [item["id"] for item in search_cards(cards, COLUMNS, r'contains:/render\w+Data/')],
+                ["match"],
+            )
+            self.assertEqual(
+                [item["id"] for item in search_cards(cards, COLUMNS, r'contains:"/return \d\d/"')],
+                ["match"],
+            )
+
+    def test_edges_are_searchable_by_type_label_and_connected_card_title(self):
+        cards = [
+            card("blocked", title="Wire the toast"),
+            card("blocker", title="Install extensions live"),
+            card("unrelated", title="Something else"),
+        ]
+        edges = [edge("e1", "blocked", "blocker", type="blocked_by", label="needs live install first")]
+
+        # type and label are properties of the edge itself, not directional —
+        # both endpoints see them.
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "edge_type:blocked_by", edges=edges)),
+            ["blocked", "blocker"],
+        )
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "has:edge", edges=edges)),
+            ["blocked", "blocker"],
+        )
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "contains:needs live install", edges=edges)),
+            ["blocked", "blocker"],
+        )
+        # the connected card's OWN title is direction-sensitive: searching
+        # "toast" (blocked's own title) finds blocker (the OTHER endpoint),
+        # not blocked itself — this is what lets `edge:X` answer "which
+        # cards are connected to something matching X" without knowing ids.
+        self.assertEqual(
+            [item["id"] for item in search_cards(cards, COLUMNS, "edge:toast", edges=edges)],
+            ["blocker"],
+        )
+        self.assertEqual(
+            [item["id"] for item in search_cards(cards, COLUMNS, "edge:extensions", edges=edges)],
+            ["blocked"],
+        )
+        self.assertEqual(search_cards(cards, COLUMNS, "has:edge"), [])
 
 
 if __name__ == "__main__":

@@ -28,6 +28,9 @@ UI_CAPABILITIES = {
     "delete_card",
     "add_session",
     "get_events",
+    "list_edges",
+    "create_edge",
+    "delete_edge",
 }
 
 

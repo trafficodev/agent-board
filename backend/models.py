@@ -25,6 +25,18 @@ class Column(BaseModel):
     position: int = 0
 
 
+# --- Edge (arbitrary typed connection between two cards, same or different board) ---
+
+class Edge(BaseModel):
+    id: str = Field(default_factory=_uid)
+    board_id: str = ""
+    from_card_id: str
+    to_card_id: str
+    type: str = "relates_to"  # arbitrary — "blocked_by", "blocks", "duplicates", etc.
+    label: str = ""
+    created_at: datetime = Field(default_factory=_now)
+
+
 # --- Session history entry ---
 
 class SessionEntry(BaseModel):
@@ -131,3 +143,10 @@ class AddSession(BaseModel):
     system: str = ""
     action: str = ""
     outcome: Literal["success", "failed", "partial"] | None = None
+
+
+class CreateEdge(BaseModel):
+    from_card_id: str
+    to_card_id: str
+    type: str = "relates_to"
+    label: str = ""

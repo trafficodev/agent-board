@@ -188,3 +188,22 @@ def add_session(board_id: str, card_id: str, session_id: str, system: str = "",
 
 def get_events(board_id: str, limit: int = 100) -> list[dict]:
     return _req("GET", f"/api/boards/{board_id}/events?limit={limit}")
+
+
+def list_edges(board_id: str, card_id: str | None = None, type: str | None = None) -> list[dict]:
+    params = urllib.parse.urlencode({k: v for k, v in {"card_id": card_id, "type": type}.items() if v})
+    path = f"/api/boards/{board_id}/edges"
+    if params:
+        path += f"?{params}"
+    return _req("GET", path)
+
+
+def create_edge(board_id: str, from_card_id: str, to_card_id: str,
+                type: str = "relates_to", label: str = "") -> dict:
+    return _req("POST", f"/api/boards/{board_id}/edges", {
+        "from_card_id": from_card_id, "to_card_id": to_card_id, "type": type, "label": label,
+    })
+
+
+def delete_edge(board_id: str, edge_id: str) -> dict:
+    return _req("DELETE", f"/api/boards/{board_id}/edges/{edge_id}")

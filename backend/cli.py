@@ -199,6 +199,31 @@ def build_parser() -> argparse.ArgumentParser:
     get_events.add_argument("--limit", type=int, default=100)
     get_events.set_defaults(func=lambda args: client.get_events(args.board_id, args.limit))
 
+    list_edges = sub.add_parser("list_edges")
+    list_edges.add_argument("board_id")
+    list_edges.add_argument("--card-id")
+    list_edges.add_argument("--type")
+    list_edges.set_defaults(
+        func=lambda args: client.list_edges(args.board_id, card_id=args.card_id, type=args.type)
+    )
+
+    create_edge = sub.add_parser("create_edge")
+    create_edge.add_argument("board_id")
+    create_edge.add_argument("from_card_id")
+    create_edge.add_argument("to_card_id")
+    create_edge.add_argument("--type", default="relates_to")
+    create_edge.add_argument("--label", default="")
+    create_edge.set_defaults(
+        func=lambda args: client.create_edge(
+            args.board_id, args.from_card_id, args.to_card_id, type=args.type, label=args.label,
+        )
+    )
+
+    delete_edge = sub.add_parser("delete_edge")
+    delete_edge.add_argument("board_id")
+    delete_edge.add_argument("edge_id")
+    delete_edge.set_defaults(func=lambda args: client.delete_edge(args.board_id, args.edge_id))
+
     return parser
 
 

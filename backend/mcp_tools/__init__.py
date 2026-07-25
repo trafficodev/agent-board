@@ -5,11 +5,12 @@ register only the capability surface it needs (e.g. just `cards`) instead of
 loading all 21 tools under one server.
 """
 
-from . import boards, canvas, cards, sessions
+from . import boards, canvas, cards, edges, sessions
 
 GROUPS = {
     "boards": boards,
     "canvas": canvas,
     "cards": cards,
+    "edges": edges,
     "sessions": sessions,
 }

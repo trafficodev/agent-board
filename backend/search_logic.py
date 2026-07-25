@@ -30,14 +30,19 @@ class SearchTerm:
     negative: bool
     field: str | None
     value: str
+    regex: "re.Pattern | None" = None
 
 
-def search_cards(cards: list[dict[str, Any]], columns: list[dict[str, Any]], query: str = "", priority: str | None = None, label: str | None = None) -> list[dict[str, Any]]:
+def search_cards(
+    cards: list[dict[str, Any]], columns: list[dict[str, Any]], query: str = "",
+    priority: str | None = None, label: str | None = None, edges: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     terms = parse_search_query(query)
     column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
     cards_by_id = {card["id"]: card for card in cards}
     children_by_parent = _group_children(cards)
-    rg_cache: dict[tuple[str, tuple[str, ...]], bool] = {}
+    edges_by_card = _group_edges_by_card(edges or [])
+    rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool] = {}
 
     direct_ids: set[str] = set()
     for card in cards:
@@ -45,7 +50,7 @@ def search_cards(cards: list[dict[str, Any]], columns: list[dict[str, Any]], que
             continue
         if label and label not in card.get("labels", []):
             continue
-        if _matches_query(card, terms, column_names_by_id, rg_cache):
+        if _matches_query(card, terms, column_names_by_id, rg_cache, edges_by_card, cards_by_id):
             direct_ids.add(card["id"])
 
     if not terms and not priority and not label:
@@ -59,7 +64,14 @@ def search_cards(cards: list[dict[str, Any]], columns: list[dict[str, Any]], que
     return sorted([card for card in cards if card["id"] in visible_ids], key=_card_sort_key)
 
 
+_REGEX_VALUE_RE = re.compile(r"^/(.+)/([a-zA-Z]*)$")
+
+
 def parse_search_query(query: str) -> list[SearchTerm]:
+    """Grep-style `/pattern/flags` value syntax works on any field, including
+    the unscoped (search-everything) case and `contains:` — e.g.
+    `title:/^Fix.*bug$/i`, `/TODO|FIXME/`, `contains:/error: \\d+/`. Every
+    other value is still a plain case-insensitive substring match, unchanged."""
     terms: list[SearchTerm] = []
     for raw_token in _tokenize(query):
         token = raw_token.strip()
@@ -74,6 +86,17 @@ def parse_search_query(query: str) -> list[SearchTerm]:
             raw_field = _normalize(token[:colon_index])
             field = FIELD_ALIASES.get(raw_field, raw_field)
             value = token[colon_index + 1:]
+
+        regex_match = _REGEX_VALUE_RE.match(value)
+        if regex_match:
+            pattern, flags = regex_match.groups()
+            re_flags = re.IGNORECASE if "i" in flags.lower() else 0
+            try:
+                compiled = re.compile(pattern, re_flags)
+            except re.error as exc:
+                raise ValueError(f"invalid regex /{pattern}/: {exc}") from exc
+            terms.append(SearchTerm(negative=negative, field=field, value=pattern, regex=compiled))
+            continue
 
         normalized = _normalize(value)
         if normalized:
@@ -102,9 +125,13 @@ def _tokenize(query: str) -> list[str]:
     return tokens
 
 
-def _matches_query(card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
+def _matches_query(
+    card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str],
+    rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> bool:
     for term in terms:
-        matched = _matches_term(card, term, column_names_by_id, rg_cache)
+        matched = _matches_term(card, term, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
         if term.negative and matched:
             return False
         if not term.negative and not matched:
@@ -112,22 +139,42 @@ def _matches_query(card: dict[str, Any], terms: list[SearchTerm], column_names_b
     return True
 
 
-def _matches_term(card: dict[str, Any], term: SearchTerm, column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
+def _group_edges_by_card(edges: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for edge in edges:
+        grouped.setdefault(edge["from_card_id"], []).append(edge)
+        grouped.setdefault(edge["to_card_id"], []).append(edge)
+    return grouped
+
+
+def _matches_term(
+    card: dict[str, Any], term: SearchTerm, column_names_by_id: dict[str, str],
+    rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> bool:
     if term.field == "has":
-        return _matches_has(card, term.value)
+        return _matches_has(card, term.value, edges_by_card)
     if term.field == "file":
         return _matches_file(card, term.value)
     if term.field == "commit":
         return _matches_commit(card, term.value)
     if term.field == "contains":
-        return _matches_contains(card, term.value, column_names_by_id, rg_cache)
-    return any(term.value in _normalize(value) for value in _search_values(card, column_names_by_id, term.field))
+        return _matches_contains(card, term.value, term.regex, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
+    values = _search_values(card, column_names_by_id, term.field, edges_by_card, cards_by_id)
+    if term.regex:
+        return any(term.regex.search(str(value)) for value in values)
+    return any(term.value in _normalize(value) for value in values)
 
 
-def _search_values(card: dict[str, Any], column_names_by_id: dict[str, str], field: str | None) -> list[Any]:
+def _search_values(
+    card: dict[str, Any], column_names_by_id: dict[str, str], field: str | None,
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> list[Any]:
     sessions = []
     for entry in card.get("session_history") or []:
         sessions.extend(["session", entry.get("session_id", ""), entry.get("system", ""), entry.get("action", ""), entry.get("outcome") or "", entry.get("timestamp", "")])
+
+    edge_values = _edge_search_values(card, edges_by_card, cards_by_id)
 
     metadata_values = _flatten_metadata(card.get("metadata") or {})
     scoped = {
@@ -140,6 +187,8 @@ def _search_values(card: dict[str, Any], column_names_by_id: dict[str, str], fie
         "id": [card.get("id", "")],
         "metadata": metadata_values,
         "session": sessions,
+        "edge": edge_values,
+        "edge_type": [e.get("type", "") for e in edges_by_card.get(card.get("id", ""), [])],
     }
     if field in scoped:
         return scoped[field]
@@ -153,16 +202,39 @@ def _search_values(card: dict[str, Any], column_names_by_id: dict[str, str], fie
         *card.get("labels", []),
         *metadata_values,
         *sessions,
+        *edge_values,
     ]
 
 
-def _matches_has(card: dict[str, Any], value: str) -> bool:
+def _edge_search_values(
+    card: dict[str, Any], edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Every edge touching this card, as greppable strings: the edge type,
+    its label, and the OTHER card's title (in the meaningful direction) —
+    so `blocked by install` finds a card whose blocked_by edge points at a
+    card titled "...install...", without needing to know its id."""
+    values: list[str] = []
+    card_id = card.get("id", "")
+    for edge in edges_by_card.get(card_id, []):
+        values.append(edge.get("type", ""))
+        if edge.get("label"):
+            values.append(edge["label"])
+        other_id = edge["to_card_id"] if edge["from_card_id"] == card_id else edge["from_card_id"]
+        other = cards_by_id.get(other_id)
+        if other:
+            values.append(other.get("title", ""))
+    return values
+
+
+def _matches_has(card: dict[str, Any], value: str, edges_by_card: dict[str, list[dict[str, Any]]]) -> bool:
     if value in {"file", "files", "edited_file", "edited_files"}:
         return _has_file(card)
     if value in {"commit", "commits", "git_commit", "git_commits"}:
         return _has_commit(card)
     if value in {"session", "sessions"}:
         return bool(card.get("session_history"))
+    if value in {"edge", "edges"}:
+        return bool(edges_by_card.get(card.get("id", "")))
     return False
 
 
@@ -180,26 +252,37 @@ def _matches_commit(card: dict[str, Any], value: str) -> bool:
     return value in _normalize(body) or any(value in _normalize(item) for item in _metadata_values(card, "git_commits"))
 
 
-def _matches_contains(card: dict[str, Any], value: str, column_names_by_id: dict[str, str], rg_cache: dict[tuple[str, tuple[str, ...]], bool]) -> bool:
-    if any(value in _normalize(candidate) for candidate in _search_values(card, column_names_by_id, None)):
+def _matches_contains(
+    card: dict[str, Any], value: str, regex: "re.Pattern | None", column_names_by_id: dict[str, str],
+    rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> bool:
+    values = _search_values(card, column_names_by_id, None, edges_by_card, cards_by_id)
+    if regex:
+        if any(regex.search(str(candidate)) for candidate in values):
+            return True
+    elif any(value in _normalize(candidate) for candidate in values):
         return True
-    if _matches_file(card, value) or _matches_commit(card, value):
+    if not regex and (_matches_file(card, value) or _matches_commit(card, value)):
         return True
 
     paths = tuple(str(path) for path in _existing_edited_file_paths(card))
     if not paths:
         return False
 
-    key = (value, paths)
+    pattern = regex.pattern if regex else value
+    key = (pattern, bool(regex), paths)
     if key not in rg_cache:
-        rg_cache[key] = _rg_contains(value, paths)
+        rg_cache[key] = _rg_contains(pattern, paths, is_regex=bool(regex))
     return rg_cache[key]
 
 
-def _rg_contains(value: str, paths: tuple[str, ...]) -> bool:
+def _rg_contains(value: str, paths: tuple[str, ...], *, is_regex: bool = False) -> bool:
+    argv = ["rg"] if is_regex else ["rg", "--fixed-strings"]
+    argv += ["--ignore-case", "--quiet", "--", value, *paths]
     try:
         result = subprocess.run(
-            ["rg", "--fixed-strings", "--ignore-case", "--quiet", "--", value, *paths],
+            argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=3,

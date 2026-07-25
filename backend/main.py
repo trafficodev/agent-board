@@ -7,12 +7,14 @@ from pydantic import BaseModel, Field
 import board_store as bs
 import canvas_sync
 import card_store as cs
+import edge_store as es
 import search_logic
 from models import (
     AddSession,
     CreateBoard,
     CreateCard,
     CreateColumn,
+    CreateEdge,
     MoveCard,
     UpdateBoard,
     UpdateCard,
@@ -227,7 +229,11 @@ def api_search_cards(board_id: str, query: str = "", priority: str | None = None
     board = _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
-    return search_logic.search_cards(cards, columns, query=query, priority=priority, label=label)
+    edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
+    try:
+        return search_logic.search_cards(cards, columns, query=query, priority=priority, label=label, edges=edges)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/boards/{board_id}/cards", status_code=201)
@@ -291,6 +297,34 @@ def api_add_session(board_id: str, card_id: str, body: AddSession):
         raise HTTPException(404, "Card not found")
     _sync_board_if_enabled(board_id)
     return card
+
+
+# --- Edges (arbitrary typed connections between two cards) ---
+
+@app.get("/api/boards/{board_id}/edges")
+def api_list_edges(board_id: str, card_id: str | None = None, type: str | None = None):
+    _board_or_404(board_id)
+    return es.list_edges(board_id, card_id=card_id, type=type)
+
+
+@app.post("/api/boards/{board_id}/edges", status_code=201)
+def api_create_edge(board_id: str, body: CreateEdge):
+    _board_or_404(board_id)
+    edge = es.create_edge(board_id, body)
+    if not edge:
+        raise HTTPException(400, "Invalid board or card id")
+    _sync_board_if_enabled(board_id)
+    return edge
+
+
+@app.delete("/api/boards/{board_id}/edges/{edge_id}")
+def api_delete_edge(board_id: str, edge_id: str):
+    _board_or_404(board_id)
+    _validate_id(edge_id, "edge_id")
+    if not es.delete_edge(board_id, edge_id):
+        raise HTTPException(404, "Edge not found")
+    _sync_board_if_enabled(board_id)
+    return {"ok": True}
 
 
 # --- Events ---
