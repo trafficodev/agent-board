@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from models import (
     AddSession,
     Card,
     Event,
+    FieldChange,
     MoveCard,
     SessionEntry,
     UpdateCard,
@@ -20,6 +22,72 @@ from board_store import get_board
 
 CLOSED_CARD_TTL = timedelta(days=3)
 CLOSED_AT_METADATA_KEY = "closed_at"
+
+# Card authorship history. Every mutator records who changed what, so a card
+# carries its own audit trail instead of leaving it to callers to remember.
+_HISTORY_LIMIT = 50
+_HISTORY_VALUE_CHARS = 400
+_TRACKED_FIELDS = (
+    "title", "body", "column_id", "parent_id", "priority", "labels", "metadata", "external_id",
+)
+
+
+def acting_session() -> tuple[str, str]:
+    """The Better Agent session driving this call, as ``(session_id, system)``.
+
+    Better Agent spawns an MCP server per session with the id in its env, so a
+    tool call attributes itself with no caller cooperation. The standalone API
+    and the shared extension-host process have no session in scope; those
+    changes are recorded with an empty session_id — unknown authorship, never
+    guessed authorship."""
+    session_id = (
+        os.environ.get("BETTER_AGENT_APP_SESSION_ID")
+        or os.environ.get("BETTER_CLAUDE_APP_SESSION_ID")
+        or ""
+    ).strip()
+    system = (os.environ.get("BETTER_AGENT_PROVIDER_KIND") or "").strip()
+    return session_id, system
+
+
+def _history_value(value):
+    """Values are stored for display; long bodies and big metadata blobs get
+    truncated so history stays a fraction of the card."""
+    if isinstance(value, str) and len(value) > _HISTORY_VALUE_CHARS:
+        return value[:_HISTORY_VALUE_CHARS] + "…"
+    return value
+
+
+def _snapshot(card: Card) -> dict:
+    snapshot = {}
+    for field in _TRACKED_FIELDS:
+        value = getattr(card, field, None)
+        if field == "labels":
+            value = list(value or [])
+        elif field == "metadata":
+            # closed_at is stamped by the store itself, not by the caller, so
+            # it would report as a user edit on every close.
+            value = {k: v for k, v in dict(value or {}).items() if k != CLOSED_AT_METADATA_KEY}
+        snapshot[field] = value
+    return snapshot
+
+
+def _diff(before: dict, after: dict) -> list[FieldChange]:
+    return [
+        FieldChange(field=field, before=_history_value(before.get(field)), after=_history_value(after.get(field)))
+        for field in _TRACKED_FIELDS
+        if before.get(field) != after.get(field)
+    ]
+
+
+def _record_history(card: Card, action: str, changes: list[FieldChange]) -> None:
+    if action != "created" and not changes:
+        return
+    session_id, system = acting_session()
+    card.session_history.append(
+        SessionEntry(session_id=session_id, system=system, action=action, changes=changes)
+    )
+    if len(card.session_history) > _HISTORY_LIMIT:
+        del card.session_history[:-_HISTORY_LIMIT]
 
 
 def _cards_path(board_id: str) -> Path:
@@ -172,6 +240,7 @@ def create_card(board_id: str, data: "CreateCard") -> Card | None:
         metadata=data.metadata,
     )
     _stamp_closed_state(card, _closed_column_id(board_id), now)
+    _record_history(card, "created", [])
     cards.append(card)
     _reindex_column(cards, data.column_id)
     _locked_write(board_id, cards, Event(type="card_created", detail=card.title))
@@ -187,6 +256,7 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
 
     closed_column_id = _closed_column_id(board_id)
     now = _now()
+    before = _snapshot(card)
     existing_closed_at = card.metadata.get(CLOSED_AT_METADATA_KEY)
     if data.external_id is not None:
         card.external_id = data.external_id
@@ -220,6 +290,7 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
             _reindex_column(cards, old_col)
 
     _stamp_closed_state(card, closed_column_id, now)
+    _record_history(card, "updated", _diff(before, _snapshot(card)))
     card.updated_at = now
     _locked_write(board_id, cards, Event(type="card_updated", detail=card.title))
     return card
@@ -249,6 +320,7 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
 
     closed_column_id = _closed_column_id(board_id)
     now = _now()
+    before = _snapshot(card)
     old_col = card.column_id
     card.column_id = data.column_id
 
@@ -259,11 +331,16 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     # Cascade column move to all descendants
     if old_col != data.column_id:
         for desc in _collect_descendants(cards, card_id):
+            desc_before = _snapshot(desc)
             desc.column_id = data.column_id
             _stamp_closed_state(desc, closed_column_id, now)
+            # A sub-task dragged along by its parent still changed lane, so it
+            # records the move under its own history.
+            _record_history(desc, "moved", _diff(desc_before, _snapshot(desc)))
             desc.updated_at = now
 
     _stamp_closed_state(card, closed_column_id, now)
+    _record_history(card, "moved", _diff(before, _snapshot(card)))
     card.updated_at = now
     _reindex_column(cards, data.column_id)
     if old_col != data.column_id:

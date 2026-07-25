@@ -39,12 +39,21 @@ class Edge(BaseModel):
 
 # --- Session history entry ---
 
+class FieldChange(BaseModel):
+    """One field's before/after for a card edit. Long values are truncated by
+    the writer so a card's history cannot outgrow the card itself."""
+    field: str
+    before: Any = None
+    after: Any = None
+
+
 class SessionEntry(BaseModel):
     session_id: str
     system: str = ""
     timestamp: datetime = Field(default_factory=_now)
     action: str = ""
     outcome: Literal["success", "failed", "partial"] | None = None
+    changes: list[FieldChange] = Field(default_factory=list)
 
 
 # --- Card ---
