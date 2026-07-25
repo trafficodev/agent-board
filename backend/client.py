@@ -1,75 +1,182 @@
 """HTTP client for Agent Board API.
 
-Auto-starts the backend server if it's not already running.
-Any MCP tool or CLI should import from here instead of calling the API directly.
+Auto-starts a local backend server only when the configured endpoint is not
+already healthy. Any MCP tool or CLI should import from here instead of calling
+the API directly.
 """
 
+import json
 import os
-import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
-import urllib.request
-import json
 import urllib.parse
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 BASE_URL = os.environ.get("AGENT_BOARD_URL", "http://localhost:8001")
 _API_PATH = Path(__file__).resolve().parent
-_PROJECT_ROOT = _API_PATH.parent
 _BACKEND_DIR = _API_PATH
-_VENV_PYTHON = _BACKEND_DIR / ".venv" / "bin" / "python"
-_PORT = int(BASE_URL.rsplit(":", 1)[-1].rstrip("/"))
+_STARTUP_ATTEMPTS = 50
+_STARTUP_INTERVAL_SECONDS = 0.2
+_STOP_TIMEOUT_SECONDS = 2
+_SERVER_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "AGENT_BOARD_HOME",
+)
 
 _process: subprocess.Popen | None = None
+_start_lock = threading.Lock()
+
+
+class AgentBoardUnavailableError(RuntimeError):
+    pass
+
+
+def _normalized_base_url() -> str:
+    return BASE_URL.rstrip("/")
 
 
 def _is_running() -> bool:
     try:
-        urllib.request.urlopen(f"{BASE_URL}/api/boards", timeout=2)
-        return True
-    except Exception:
+        with urllib.request.urlopen(f"{_normalized_base_url()}/api/boards", timeout=2) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 300
+    except (OSError, ValueError, urllib.error.URLError):
         return False
 
 
-def _start_server() -> None:
+def _local_server_port() -> int:
+    try:
+        parsed = urlsplit(BASE_URL)
+        port = parsed.port
+    except ValueError as exc:
+        raise AgentBoardUnavailableError(f"Invalid AGENT_BOARD_URL: {BASE_URL}") from exc
+
+    if (
+        parsed.scheme != "http"
+        or (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or port is None
+    ):
+        raise AgentBoardUnavailableError(
+            f"Agent Board backend is unavailable at {BASE_URL}; auto-start requires "
+            "http://localhost:<port> or http://127.0.0.1:<port>"
+        )
+    return port
+
+
+def _python_executable() -> str:
+    candidates = (
+        _BACKEND_DIR / ".venv" / "Scripts" / "python.exe",
+        _BACKEND_DIR / ".venv" / "bin" / "python",
+    )
+    return str(next((candidate for candidate in candidates if candidate.is_file()), Path(sys.executable)))
+
+
+def _server_env() -> dict[str, str]:
+    return {key: os.environ[key] for key in _SERVER_ENV_KEYS if key in os.environ}
+
+
+def _stop_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=_STOP_TIMEOUT_SECONDS)
+    except OSError:
+        return
+
+
+def ensure_server() -> None:
     global _process
     if _is_running():
         return
 
-    python = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
-    _process = subprocess.Popen(
-        [python, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", f"--port={_PORT}"],
-        cwd=str(_BACKEND_DIR),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    # Wait up to 10s for the server to be ready
-    for _ in range(50):
+    with _start_lock:
         if _is_running():
             return
-        time.sleep(0.2)
 
-    raise RuntimeError(f"Agent Board backend failed to start on {BASE_URL}")
+        port = _local_server_port()
+        if not (_BACKEND_DIR / "main.py").is_file():
+            raise AgentBoardUnavailableError(f"Agent Board backend is unavailable at {_BACKEND_DIR}")
 
+        try:
+            process = subprocess.Popen(
+                [
+                    _python_executable(),
+                    "-m",
+                    "uvicorn",
+                    "main:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(port),
+                ],
+                cwd=str(_BACKEND_DIR),
+                env=_server_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise AgentBoardUnavailableError(
+                f"Agent Board backend could not start at {BASE_URL}: {exc}"
+            ) from exc
 
-def _ensure():
-    _start_server()
+        _process = process
+        for _ in range(_STARTUP_ATTEMPTS):
+            if _is_running():
+                if process.poll() is not None and _process is process:
+                    _process = None
+                return
+            if process.poll() is not None:
+                break
+            time.sleep(_STARTUP_INTERVAL_SECONDS)
+
+        _stop_process(process)
+        if _process is process:
+            _process = None
+        if _is_running():
+            return
+        raise AgentBoardUnavailableError(f"Agent Board backend failed to start at {BASE_URL}")
 
 
 def _req(method: str, path: str, body: dict | None = None) -> dict | list:
-    _ensure()
-    url = f"{BASE_URL}{path}"
+    ensure_server()
+    url = f"{_normalized_base_url()}{path}"
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method=method)
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
-        return json.loads(resp.read())
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         detail = e.read().decode()
         raise RuntimeError(f"{e.code} {e.reason}: {detail}") from e
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        raise AgentBoardUnavailableError(f"Agent Board backend is unavailable at {BASE_URL}: {exc}") from exc
 
 
 # --- Public API ---
