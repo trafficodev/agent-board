@@ -1,22 +1,15 @@
 """MCP server for Agent Board.
 
-Launches one tool group (boards, canvas, cards, or sessions) over stdio, so
-a client only registers the capability surface it actually needs instead of
-loading all tools under one server. Groups live in `mcp_tools/`.
+Launches one tool group (boards, canvas, cards, edges, or sessions) over
+stdio, so a client only registers the capability surface it actually needs
+instead of loading all tools under one server. Groups live in `mcp_tools/`.
 
 Auto-starts the board backend on first use (via client.py).
 
-Usage in Claude Code settings.json — register only the groups you need:
-  "mcpServers": {
-    "agent-board-cards": {
-      "command": "python",
-      "args": ["<agent-board-repo>/backend/mcp_server.py", "cards"]
-    },
-    "agent-board-boards": {
-      "command": "python",
-      "args": ["<agent-board-repo>/backend/mcp_server.py", "boards"]
-    }
-  }
+Registration across every installed provider (Claude, Codex, Gemini) is
+handled by `../manage_mcp.py install` / `uninstall` -- run that instead of
+hand-editing each provider's config. See that script if you need the raw
+command/args shape it registers.
 """
 
 import asyncio
