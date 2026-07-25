@@ -86,9 +86,19 @@ def create_board(name: str, description: str = "", columns: list[str] | None = N
     return _req("POST", "/api/boards", {"name": name, "description": description, "columns": columns})
 
 
-def update_board(board_id: str, name: str | None = None, description: str | None = None) -> dict:
-    body = {k: v for k, v in {"name": name, "description": description}.items() if v is not None}
+def update_board(
+    board_id: str, name: str | None = None, description: str | None = None, remote_url: str | None = None,
+) -> dict:
+    body = {k: v for k, v in {"name": name, "description": description, "remote_url": remote_url}.items() if v is not None}
     return _req("PATCH", f"/api/boards/{board_id}", body)
+
+
+def ensure_project_board(
+    remote_url: str, name: str | None = None, description: str = "", columns: list[str] | None = None,
+) -> dict:
+    return _req("POST", "/api/projects/ensure-board", {
+        "remote_url": remote_url, "name": name, "description": description, "columns": columns,
+    })
 
 
 def delete_board(board_id: str) -> dict:

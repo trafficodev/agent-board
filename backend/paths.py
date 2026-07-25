@@ -28,3 +28,10 @@ def events_path(board_id: str) -> Path:
 
 def edges_path(board_id: str) -> Path:
     return boards_dir() / f"{board_id}_edges.json"
+
+
+def ensure_lock_path(key: str) -> Path:
+    """Lock file for a cross-board 'ensure by key' operation (e.g. remote URL)."""
+    d = home() / "locks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{key}.lock"

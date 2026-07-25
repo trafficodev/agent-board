@@ -7,7 +7,19 @@ const FIELD_ALIASES = new Map([
   ["commits", "commit"],
   ["git_commit", "commit"],
   ["git_commits", "commit"],
+  ["worktrees", "worktree"],
+  ["worktree_path", "worktree"],
+  ["worktree_paths", "worktree"],
   ["content", "contains"],
+]);
+
+// Card fields backed by a `<key>: [...]` line in the body, plus an optional
+// freeform-text detector regex. Mirrors `_TRACKED_LIST_FIELDS` in
+// backend/search_logic.py — keep both in sync when this changes.
+const TRACKED_LIST_FIELDS = new Map([
+  ["file", { bodyKey: "edited_files:", detector: /(^|\s|`)\/?[\w.-]+\/[\w./-]+/ }],
+  ["commit", { bodyKey: "git_commits:", detector: /\b[0-9a-f]{7,40}\b/i }],
+  ["worktree", { bodyKey: "worktrees:", detector: null }],
 ]);
 
 export function filterCardsForBoard(cards, columns, filters) {
@@ -101,8 +113,7 @@ function matchesQuery(card, terms, columnNamesById) {
 
 function matchesTerm(card, term, columnNamesById) {
   if (term.field === "has") return matchesHas(card, term.value);
-  if (term.field === "file") return matchesFile(card, term.value);
-  if (term.field === "commit") return matchesCommit(card, term.value);
+  if (TRACKED_LIST_FIELDS.has(term.field)) return matchesTracked(card, term.field, term.value);
   if (term.field === "contains") return false;
   const values = searchValues(card, columnNamesById, term.field);
   return values.some((value) => normalize(value).includes(term.value));
@@ -145,35 +156,29 @@ function searchValues(card, columnNamesById, field) {
   ];
 }
 
+const HAS_ALIASES = new Map([
+  ["file", "file"], ["files", "file"], ["edited_file", "file"], ["edited_files", "file"],
+  ["commit", "commit"], ["commits", "commit"], ["git_commit", "commit"], ["git_commits", "commit"],
+  ["worktree", "worktree"], ["worktrees", "worktree"], ["worktree_path", "worktree"], ["worktree_paths", "worktree"],
+]);
+
 function matchesHas(card, value) {
-  if (value === "file" || value === "files" || value === "edited_file" || value === "edited_files") {
-    return hasFile(card);
-  }
-  if (value === "commit" || value === "commits" || value === "git_commit" || value === "git_commits") {
-    return hasCommit(card);
-  }
+  const field = HAS_ALIASES.get(value);
+  if (field) return hasTracked(card, field);
   if (value === "session" || value === "sessions") return (card.session_history ?? []).length > 0;
   return false;
 }
 
-function matchesFile(card, value) {
-  if (!hasFile(card)) return false;
+function matchesTracked(card, field, value) {
+  if (!hasTracked(card, field)) return false;
   return normalize(card.body).includes(value);
 }
 
-function matchesCommit(card, value) {
-  if (!hasCommit(card)) return false;
-  return normalize(card.body).includes(value);
-}
-
-function hasFile(card) {
+function hasTracked(card, field) {
+  const { bodyKey, detector } = TRACKED_LIST_FIELDS.get(field);
   const body = normalize(card.body);
-  return body.includes("edited_files:") || /(^|\s|`)\/?[\w.-]+\/[\w./-]+/.test(card.body);
-}
-
-function hasCommit(card) {
-  const body = normalize(card.body);
-  return body.includes("git_commits:") || /\b[0-9a-f]{7,40}\b/i.test(card.body);
+  if (body.includes(bodyKey)) return true;
+  return Boolean(detector && detector.test(card.body));
 }
 
 function addAncestors(cardId, visibleIds, cardsById) {

@@ -15,6 +15,7 @@ from models import (
     CreateCard,
     CreateColumn,
     CreateEdge,
+    EnsureProjectBoard,
     MoveCard,
     UpdateBoard,
     UpdateCard,
@@ -111,6 +112,14 @@ def api_delete_board(board_id: str):
     if not bs.delete_board(board_id):
         raise HTTPException(404, "Board not found")
     return {"ok": True}
+
+
+@app.post("/api/projects/ensure-board")
+def api_ensure_project_board(body: EnsureProjectBoard):
+    try:
+        return bs.ensure_project_board(body.remote_url, body.name, body.description, body.columns)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/import/board", status_code=201)

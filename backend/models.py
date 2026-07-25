@@ -72,6 +72,7 @@ class Board(BaseModel):
     id: str = Field(default_factory=_uid)
     name: str
     description: str = ""
+    remote_url: str = ""  # normalized git remote URL identifying the project this board tracks
     columns: list[Column] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
@@ -97,6 +98,14 @@ class CreateBoard(BaseModel):
 class UpdateBoard(BaseModel):
     name: str | None = None
     description: str | None = None
+    remote_url: str | None = None
+
+
+class EnsureProjectBoard(BaseModel):
+    remote_url: str
+    name: str | None = None  # defaults to a name derived from the remote URL
+    description: str = ""
+    columns: list[str] | None = None  # defaults to Open Items/In Progress/In Testing/Done
 
 
 class CreateColumn(BaseModel):

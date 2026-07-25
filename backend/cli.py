@@ -32,7 +32,19 @@ def build_parser() -> argparse.ArgumentParser:
     update_board.add_argument("board_id")
     update_board.add_argument("--name")
     update_board.add_argument("--description")
-    update_board.set_defaults(func=lambda args: client.update_board(args.board_id, args.name, args.description))
+    update_board.add_argument("--remote-url")
+    update_board.set_defaults(
+        func=lambda args: client.update_board(args.board_id, args.name, args.description, args.remote_url)
+    )
+
+    ensure_project_board = sub.add_parser("ensure_project_board")
+    ensure_project_board.add_argument("remote_url")
+    ensure_project_board.add_argument("--name")
+    ensure_project_board.add_argument("--description", default="")
+    ensure_project_board.add_argument("--columns", nargs="*")
+    ensure_project_board.set_defaults(
+        func=lambda args: client.ensure_project_board(args.remote_url, args.name, args.description, args.columns)
+    )
 
     delete_board = sub.add_parser("delete_board")
     delete_board.add_argument("board_id")

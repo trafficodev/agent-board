@@ -30,15 +30,36 @@ TOOLS = [
     ),
     Tool(
         name="update_board",
-        description="Update a board's name or description",
+        description="Update a board's name, description, or linked project remote URL",
         inputSchema={
             "type": "object",
             "properties": {
                 "board_id": {"type": "string"},
                 "name": {"type": "string"},
                 "description": {"type": "string"},
+                "remote_url": {"type": "string"},
             },
             "required": ["board_id"],
+        },
+    ),
+    Tool(
+        name="ensure_project_board",
+        description=(
+            "Get or create the board for a project, keyed by its git remote URL "
+            "(scp-like, ssh://, and https:// forms all normalize to the same identity, "
+            "so every worktree/clone of the same repo shares one board). Auto-creates "
+            "with Open Items/In Progress/In Testing/Done columns if none exists yet. "
+            "Idempotent — safe to call at the start of every session."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "remote_url": {"type": "string", "description": "e.g. output of `git remote get-url origin`"},
+                "name": {"type": "string", "description": "Board name if one must be created. Defaults to the repo name."},
+                "description": {"type": "string"},
+                "columns": {"type": "array", "items": {"type": "string"}, "description": "Column names if one must be created. Defaults to Open Items/In Progress/In Testing/Done"},
+            },
+            "required": ["remote_url"],
         },
     ),
     Tool(
@@ -119,6 +140,14 @@ def dispatch(name: str, arguments: dict):
                 arguments["board_id"],
                 name=arguments.get("name"),
                 description=arguments.get("description"),
+                remote_url=arguments.get("remote_url"),
+            )
+        case "ensure_project_board":
+            return client.ensure_project_board(
+                arguments["remote_url"],
+                name=arguments.get("name"),
+                description=arguments.get("description", ""),
+                columns=arguments.get("columns"),
             )
         case "delete_board":
             return client.delete_board(arguments["board_id"])

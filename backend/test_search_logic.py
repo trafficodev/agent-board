@@ -57,6 +57,20 @@ class SearchLogicTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "commit:abc1234")], ["commit"])
         self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, 'file:backend commit:def5678')], ["other"])
 
+    def test_searches_worktree_by_structured_metadata_and_has(self):
+        cards = [
+            card("dev", metadata={"worktrees": ["/repo/dev"]}),
+            card("qa", body='worktrees: ["/repo-qa"]'),
+            card("none", body="no worktree info here"),
+        ]
+
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "worktree:repo/dev")], ["dev"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "worktree:repo-qa")], ["qa"])
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "has:worktree")),
+            ["dev", "qa"],
+        )
+
     def test_keeps_hierarchy_visible_for_matches(self):
         cards = [
             card("feature", title="Image pipeline"),

@@ -1,11 +1,16 @@
 """Board + Column persistence. One JSON file per board."""
 
 import fcntl
+import hashlib
 import json
+import re
 from pathlib import Path
 
 from models import Board, Column, Event, _now, _uid
-from paths import board_path, boards_dir, events_path
+from paths import board_path, boards_dir, ensure_lock_path, events_path
+
+_SCP_LIKE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
+_URL_LIKE_RE = re.compile(r"^\w+://(?:[^@/]+@)?([^/]+)/(.+)$")
 
 
 def _read_json(path: Path) -> dict | None:
@@ -60,11 +65,14 @@ def get_board(board_id: str) -> Board | None:
     return Board.model_validate(data) if data else None
 
 
-def create_board(name: str, description: str = "", column_names: list[str] | None = None) -> Board:
+def create_board(
+    name: str, description: str = "", column_names: list[str] | None = None, remote_url: str = "",
+) -> Board:
     names = column_names or ["Backlog", "In Progress", "Review", "Done"]
     board = Board(
         name=name,
         description=description,
+        remote_url=remote_url,
         columns=[Column(name=n, position=i) for i, n in enumerate(names)],
     )
     for col in board.columns:
@@ -72,6 +80,62 @@ def create_board(name: str, description: str = "", column_names: list[str] | Non
     _save_board(board)
     _append_event(board.id, Event(type="board_created", detail=name))
     return board
+
+
+def normalize_remote_url(url: str) -> str:
+    """Collapse the scp-like, ssh://, https://, and .git-suffixed forms of the
+    same git remote to one identity string, e.g. `git@github.com:a/b.git`,
+    `https://github.com/a/b.git`, and `https://github.com/a/b` all become
+    `github.com/a/b`. Boards are keyed by this so every worktree/clone of the
+    same repo (same remote) shares one project board."""
+    url = url.strip()
+    if not url:
+        return ""
+    match = _SCP_LIKE_RE.match(url) or _URL_LIKE_RE.match(url)
+    if not match:
+        return url.lower().rstrip("/")
+    host, path = match.group(1), match.group(2)
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    return f"{host.lower()}/{path}"
+
+
+def get_board_by_remote_url(remote_url: str) -> Board | None:
+    normalized = normalize_remote_url(remote_url)
+    if not normalized:
+        return None
+    for board in list_boards():
+        if board.remote_url and normalize_remote_url(board.remote_url) == normalized:
+            return board
+    return None
+
+
+def ensure_project_board(
+    remote_url: str, name: str | None = None, description: str = "", column_names: list[str] | None = None,
+) -> Board:
+    """Idempotent get-or-create keyed by normalized remote URL."""
+    normalized = normalize_remote_url(remote_url)
+    if not normalized:
+        raise ValueError("remote_url is required")
+
+    lock_path = ensure_lock_path(hashlib.sha256(normalized.encode()).hexdigest()[:24])
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        existing = get_board_by_remote_url(normalized)
+        if existing:
+            return existing
+        default_name = normalized.rsplit("/", 1)[-1]
+        return create_board(
+            name=name or default_name,
+            description=description,
+            column_names=column_names or ["Open Items", "In Progress", "In Testing", "Done"],
+            remote_url=normalized,
+        )
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 
 def update_board(board_id: str, **kwargs) -> Board | None:

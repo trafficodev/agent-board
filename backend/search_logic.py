@@ -17,12 +17,25 @@ FIELD_ALIASES = {
     "commits": "commit",
     "git_commit": "commit",
     "git_commits": "commit",
+    "worktrees": "worktree",
+    "worktree_path": "worktree",
+    "worktree_paths": "worktree",
     "content": "contains",
     "external": "external_id",
 }
 
 FILE_RE = re.compile(r"(^|\s|`)\/?[\w.-]+\/[\w./-]+")
 COMMIT_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+
+# Card fields backed by a `metadata.<key>` list (or a `<key>: [...]` line in the
+# body) plus an optional freeform-text detector regex. `file`/`commit`/`worktree`
+# search terms, `has:<field>`, and the `contains:` fallback all read this table
+# instead of hand-rolling a matcher per field.
+_TRACKED_LIST_FIELDS: dict[str, tuple[str, "re.Pattern | None"]] = {
+    "file": ("edited_files", FILE_RE),
+    "commit": ("git_commits", COMMIT_RE),
+    "worktree": ("worktrees", None),  # no reliable freeform-text signal; structured metadata only
+}
 
 
 @dataclass(frozen=True)
@@ -154,10 +167,8 @@ def _matches_term(
 ) -> bool:
     if term.field == "has":
         return _matches_has(card, term.value, edges_by_card)
-    if term.field == "file":
-        return _matches_file(card, term.value)
-    if term.field == "commit":
-        return _matches_commit(card, term.value)
+    if term.field in _TRACKED_LIST_FIELDS:
+        return _matches_tracked(card, term.field, term.value)
     if term.field == "contains":
         return _matches_contains(card, term.value, term.regex, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
     values = _search_values(card, column_names_by_id, term.field, edges_by_card, cards_by_id)
@@ -226,11 +237,17 @@ def _edge_search_values(
     return values
 
 
+_HAS_ALIASES = {
+    "file": "file", "files": "file", "edited_file": "file", "edited_files": "file",
+    "commit": "commit", "commits": "commit", "git_commit": "commit", "git_commits": "commit",
+    "worktree": "worktree", "worktrees": "worktree", "worktree_path": "worktree", "worktree_paths": "worktree",
+}
+
+
 def _matches_has(card: dict[str, Any], value: str, edges_by_card: dict[str, list[dict[str, Any]]]) -> bool:
-    if value in {"file", "files", "edited_file", "edited_files"}:
-        return _has_file(card)
-    if value in {"commit", "commits", "git_commit", "git_commits"}:
-        return _has_commit(card)
+    field = _HAS_ALIASES.get(value)
+    if field:
+        return _has_tracked(card, field)
     if value in {"session", "sessions"}:
         return bool(card.get("session_history"))
     if value in {"edge", "edges"}:
@@ -238,18 +255,22 @@ def _matches_has(card: dict[str, Any], value: str, edges_by_card: dict[str, list
     return False
 
 
-def _matches_file(card: dict[str, Any], value: str) -> bool:
+def _has_tracked(card: dict[str, Any], field: str) -> bool:
+    key, detector = _TRACKED_LIST_FIELDS[field]
+    if _metadata_values(card, key):
+        return True
     body = card.get("body", "")
-    if not _has_file(card):
-        return False
-    return value in _normalize(body) or any(value in _normalize(item) for item in _metadata_values(card, "edited_files"))
+    if f"{key}:" in _normalize(body):
+        return True
+    return bool(detector and detector.search(body))
 
 
-def _matches_commit(card: dict[str, Any], value: str) -> bool:
-    body = card.get("body", "")
-    if not _has_commit(card):
+def _matches_tracked(card: dict[str, Any], field: str, value: str) -> bool:
+    if not _has_tracked(card, field):
         return False
-    return value in _normalize(body) or any(value in _normalize(item) for item in _metadata_values(card, "git_commits"))
+    key, _ = _TRACKED_LIST_FIELDS[field]
+    body = card.get("body", "")
+    return value in _normalize(body) or any(value in _normalize(item) for item in _metadata_values(card, key))
 
 
 def _matches_contains(
@@ -263,7 +284,7 @@ def _matches_contains(
             return True
     elif any(value in _normalize(candidate) for candidate in values):
         return True
-    if not regex and (_matches_file(card, value) or _matches_commit(card, value)):
+    if not regex and any(_matches_tracked(card, field, value) for field in _TRACKED_LIST_FIELDS):
         return True
 
     paths = tuple(str(path) for path in _existing_edited_file_paths(card))
@@ -354,18 +375,6 @@ def _flatten_metadata(value: Any) -> list[str]:
     elif value not in (None, ""):
         values.append(str(value))
     return values
-
-
-def _has_file(card: dict[str, Any]) -> bool:
-    body = card.get("body", "")
-    normalized = _normalize(body)
-    return bool(_metadata_values(card, "edited_files")) or "edited_files:" in normalized or bool(FILE_RE.search(body))
-
-
-def _has_commit(card: dict[str, Any]) -> bool:
-    body = card.get("body", "")
-    normalized = _normalize(body)
-    return bool(_metadata_values(card, "git_commits")) or "git_commits:" in normalized or bool(COMMIT_RE.search(body))
 
 
 def _add_ancestors(card_id: str, visible_ids: set[str], cards_by_id: dict[str, dict[str, Any]]) -> None:
