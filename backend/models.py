@@ -39,6 +39,19 @@ class Edge(BaseModel):
 
 # --- Session history entry ---
 
+class CardNote(BaseModel):
+    """A work note or a question left on a card. A question with no answer is
+    open, and open questions are what the UI surfaces for attention."""
+    id: str = Field(default_factory=_uid)
+    kind: Literal["note", "question"] = "note"
+    text: str
+    session_id: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    answer: str = ""
+    answered_by: str = ""
+    answered_at: datetime | None = None
+
+
 class FieldChange(BaseModel):
     """One field's before/after for a card edit. Long values are truncated by
     the writer so a card's history cannot outgrow the card itself."""
@@ -71,6 +84,7 @@ class Card(BaseModel):
     labels: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     session_history: list[SessionEntry] = Field(default_factory=list)
+    notes: list[CardNote] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
@@ -161,6 +175,16 @@ class AddSession(BaseModel):
     system: str = ""
     action: str = ""
     outcome: Literal["success", "failed", "partial"] | None = None
+
+
+class AddNote(BaseModel):
+    kind: Literal["note", "question"] = "note"
+    text: str
+
+
+class AnswerNote(BaseModel):
+    answer: str
+    answered_by: str = ""
 
 
 class CreateEdge(BaseModel):

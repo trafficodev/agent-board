@@ -8,8 +8,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from models import (
+    AddNote,
     AddSession,
+    AnswerNote,
     Card,
+    CardNote,
     Event,
     FieldChange,
     MoveCard,
@@ -88,8 +91,8 @@ def _diff(before: dict, after: dict) -> list[FieldChange]:
     ]
 
 
-def _record_history(card: Card, action: str, changes: list[FieldChange]) -> None:
-    if action != "created" and not changes:
+def _record_history(card: Card, action: str, changes: list[FieldChange], force: bool = False) -> None:
+    if not force and action != "created" and not changes:
         return
     session_id, system = acting_session()
     card.session_history.append(
@@ -397,6 +400,91 @@ def add_session(board_id: str, card_id: str, data: AddSession) -> Card | None:
         actor=data.system or data.session_id,
     ))
     return card
+
+
+_MAX_NOTES = 200
+_MAX_NOTE_CHARS = 8000
+
+
+def is_open_question(note: CardNote) -> bool:
+    """A question nobody has answered yet. This is the single definition of
+    'needs attention' — the badge, the card marker and the panel all use it."""
+    return note.kind == "question" and not (note.answer or "").strip()
+
+
+def add_note(board_id: str, card_id: str, data: AddNote) -> Card | None:
+    text = (data.text or "").strip()
+    if not text:
+        return None
+    cards = _read_cards(board_id)
+    card = next((c for c in cards if c.id == card_id), None)
+    if not card:
+        return None
+
+    session_id, _ = acting_session()
+    note = CardNote(kind=data.kind, text=text[:_MAX_NOTE_CHARS], session_id=session_id)
+    card.notes.append(note)
+    if len(card.notes) > _MAX_NOTES:
+        del card.notes[:-_MAX_NOTES]
+    card.updated_at = _now()
+    _record_history(card, "asked" if data.kind == "question" else "noted", [], force=True)
+    _locked_write(board_id, cards, Event(
+        type="card_note_added",
+        detail=f"{data.kind} on {card.title}",
+        actor=session_id,
+    ))
+    return card
+
+
+def answer_note(board_id: str, card_id: str, note_id: str, data: AnswerNote) -> Card | None:
+    answer = (data.answer or "").strip()
+    if not answer:
+        return None
+    cards = _read_cards(board_id)
+    card = next((c for c in cards if c.id == card_id), None)
+    if not card:
+        return None
+    note = next((n for n in card.notes if n.id == note_id), None)
+    if note is None or note.kind != "question":
+        return None
+
+    session_id, _ = acting_session()
+    note.answer = answer[:_MAX_NOTE_CHARS]
+    # An answer from the UI has no session; the caller says who replied.
+    note.answered_by = (data.answered_by or session_id or "user").strip()
+    note.answered_at = _now()
+    card.updated_at = note.answered_at
+    _record_history(card, "answered", [], force=True)
+    _locked_write(board_id, cards, Event(
+        type="card_question_answered",
+        detail=f"{card.title}",
+        actor=note.answered_by,
+    ))
+    return card
+
+
+def open_questions(board_id: str | None = None) -> list[dict]:
+    """Every unanswered question, newest first, across one board or all of them."""
+    from board_store import list_boards
+
+    board_ids = [board_id] if board_id else [b.id for b in list_boards()]
+    found: list[dict] = []
+    for bid in board_ids:
+        for card in _read_cards(bid):
+            for note in card.notes:
+                if not is_open_question(note):
+                    continue
+                found.append({
+                    "board_id": bid,
+                    "card_id": card.id,
+                    "card_title": card.title,
+                    "note_id": note.id,
+                    "text": note.text,
+                    "session_id": note.session_id,
+                    "created_at": note.created_at.isoformat(),
+                })
+    found.sort(key=lambda item: item["created_at"], reverse=True)
+    return found
 
 
 def get_events(board_id: str, limit: int = 100) -> list[Event]:

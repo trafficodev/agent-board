@@ -33,6 +33,46 @@ TOOLS = [
             "required": ["board_id"],
         },
     ),
+    Tool(
+        name="add_card_note",
+        description=(
+            "Leave a work note on a card, or ASK A QUESTION about it. A question stays open until "
+            "someone answers it and is surfaced to the user as an attention badge, so use kind='question' "
+            "when you need a human decision and kind='note' to record working context."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "card_id": {"type": "string"},
+                "text": {"type": "string"},
+                "kind": {"type": "string", "enum": ["note", "question"], "default": "note"},
+            },
+            "required": ["board_id", "card_id", "text"],
+        },
+    ),
+    Tool(
+        name="answer_card_question",
+        description="Answer an open question on a card, which clears it from the user's attention badge",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "card_id": {"type": "string"},
+                "note_id": {"type": "string"},
+                "answer": {"type": "string"},
+            },
+            "required": ["board_id", "card_id", "note_id", "answer"],
+        },
+    ),
+    Tool(
+        name="list_open_questions",
+        description="List unanswered questions across every board, or one board when board_id is given",
+        inputSchema={
+            "type": "object",
+            "properties": {"board_id": {"type": "string"}},
+        },
+    ),
 ]
 
 
@@ -47,6 +87,22 @@ def dispatch(name: str, arguments: dict):
                 action=arguments.get("action", ""),
                 outcome=arguments.get("outcome"),
             )
+        case "add_card_note":
+            return client.add_card_note(
+                arguments["board_id"],
+                arguments["card_id"],
+                arguments["text"],
+                kind=arguments.get("kind", "note"),
+            )
+        case "answer_card_question":
+            return client.answer_card_question(
+                arguments["board_id"],
+                arguments["card_id"],
+                arguments["note_id"],
+                arguments["answer"],
+            )
+        case "list_open_questions":
+            return client.open_questions(arguments.get("board_id", ""))
         case "get_events":
             return client.get_events(arguments["board_id"], arguments.get("limit", 20))
         case _:

@@ -300,6 +300,23 @@ def update_card(board_id: str, card_id: str, **fields) -> dict:
     return _req("PATCH", f"/api/boards/{board_id}/cards/{card_id}", fields)
 
 
+def add_card_note(board_id: str, card_id: str, text: str, kind: str = "note") -> dict:
+    return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/notes", {"kind": kind, "text": text})
+
+
+def answer_card_question(board_id: str, card_id: str, note_id: str, answer: str, answered_by: str = "") -> dict:
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards/{card_id}/notes/{note_id}/answer",
+        {"answer": answer, "answered_by": answered_by},
+    )
+
+
+def open_questions(board_id: str = "") -> dict:
+    suffix = f"?board_id={board_id}" if board_id else ""
+    return _req("GET", f"/api/questions/open{suffix}")
+
+
 def move_card(board_id: str, card_id: str, column_id: str, position: int | None = None) -> dict:
     return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/move", {"column_id": column_id, "position": position})
 

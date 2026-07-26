@@ -10,7 +10,9 @@ import card_store as cs
 import edge_store as es
 import search_logic
 from models import (
+    AddNote,
     AddSession,
+    AnswerNote,
     CreateBoard,
     CreateCard,
     CreateColumn,
@@ -322,6 +324,38 @@ def api_add_session(board_id: str, card_id: str, body: AddSession):
         raise HTTPException(404, "Card not found")
     _sync_board_if_enabled(board_id)
     return card
+
+
+@app.post("/api/boards/{board_id}/cards/{card_id}/notes", status_code=201)
+def api_add_note(board_id: str, card_id: str, body: AddNote):
+    _board_or_404(board_id)
+    _validate_id(card_id, "card_id")
+    card = cs.add_note(board_id, card_id, body)
+    if not card:
+        raise HTTPException(404, "Card not found or note text empty")
+    _sync_board_if_enabled(board_id)
+    return card
+
+
+@app.post("/api/boards/{board_id}/cards/{card_id}/notes/{note_id}/answer")
+def api_answer_note(board_id: str, card_id: str, note_id: str, body: AnswerNote):
+    _board_or_404(board_id)
+    _validate_id(card_id, "card_id")
+    _validate_id(note_id, "note_id")
+    card = cs.answer_note(board_id, card_id, note_id, body)
+    if not card:
+        raise HTTPException(404, "Question not found or answer empty")
+    _sync_board_if_enabled(board_id)
+    return card
+
+
+@app.get("/api/questions/open")
+def api_open_questions(board_id: str | None = None):
+    """Unanswered questions across every board, for attention surfaces."""
+    if board_id:
+        _board_or_404(board_id)
+    items = cs.open_questions(board_id)
+    return {"count": len(items), "questions": items}
 
 
 # --- Edges (arbitrary typed connections between two cards) ---
