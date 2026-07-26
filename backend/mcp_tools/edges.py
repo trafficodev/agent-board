@@ -20,7 +20,12 @@ TOOLS = [
     ),
     Tool(
         name="create_edge",
-        description="Create a typed connection from one card to another (e.g. blocked_by, blocks, duplicates, relates_to — any string)",
+        description=(
+            "Create a typed connection from one card to another (e.g. blocked_by, blocks, "
+            "duplicates, relates_to — any string). 'blocks' and 'blocked_by' also order the "
+            "Open Items column: a blocker is sorted above the card waiting on it, so the top "
+            "of the backlog is always work that nothing blocks."
+        ),
         inputSchema={
             "type": "object",
             "properties": {

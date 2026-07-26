@@ -23,9 +23,12 @@ from models import (
 from paths import board_path, events_path
 
 from board_store import get_board
+from dag_order import dag_sort
+from edge_store import delete_edges_for_card, list_edges
 
 CLOSED_CARD_TTL = timedelta(days=3)
 CLOSED_AT_METADATA_KEY = "closed_at"
+DAG_ORDERED_COLUMN = "open items"
 
 # Card authorship history. Every mutator records who changed what, so a card
 # carries its own audit trail instead of leaving it to callers to remember.
@@ -106,12 +109,36 @@ def _cards_path(board_id: str) -> Path:
     return board_path(board_id).parent / f"{board_id}_cards.json"
 
 
-def _reindex_column(cards: list[Card], column_id: str) -> None:
-    """Sort cards within a column by position, then reassign sequential positions."""
+def _dag_ordered_column_ids(board_id: str) -> set[str]:
+    """The columns whose order is owned by the dependency graph. The backlog is
+    the one place order answers "what can I pick up next", so it is the one
+    place blocking edges outrank the order cards were put in."""
+    board = get_board(board_id)
+    if not board:
+        return set()
+    return {c.id for c in board.columns if c.name.strip().lower() == DAG_ORDERED_COLUMN}
+
+
+def _place_at(cards: list[Card], card: Card, position: int) -> None:
+    """Put a card at an explicit slot in its column. Everything from that slot
+    down shifts, because a bare assignment only ties the card with whoever
+    already holds the slot and the stable reindex then leaves it where it was."""
+    for other in cards:
+        if other is not card and other.column_id == card.column_id and other.position >= position:
+            other.position += 1
+    card.position = position
+
+
+def _reindex_column(board_id: str, cards: list[Card], column_id: str) -> None:
+    """Sort cards within a column by position, then reassign sequential
+    positions. A dependency-ordered column is additionally run through the
+    blocking graph, so a blocker always sits above what waits on it."""
     col_cards = sorted(
         [c for c in cards if c.column_id == column_id],
         key=lambda c: c.position,
     )
+    if column_id in _dag_ordered_column_ids(board_id):
+        col_cards = dag_sort(col_cards, list_edges(board_id))
     for i, c in enumerate(col_cards):
         c.position = i
 
@@ -149,6 +176,21 @@ def _locked_write(board_id: str, cards: list[Card], event: Event | None = None) 
                     f.write(event.model_dump_json() + "\n")
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def reindex_dag_columns(board_id: str) -> None:
+    """Re-apply dependency ordering after the graph itself changed. Edge writes
+    come through here because a new or removed blocker reorders the backlog
+    without touching any card."""
+    column_ids = _dag_ordered_column_ids(board_id)
+    if not column_ids:
+        return
+    cards = _read_cards(board_id)
+    before = {c.id: c.position for c in cards}
+    for column_id in column_ids:
+        _reindex_column(board_id, cards, column_id)
+    if any(before[c.id] != c.position for c in cards):
+        _locked_write(board_id, cards, Event(type="cards_reordered", detail="dependency order"))
 
 
 def _closed_column_id(board_id: str) -> str | None:
@@ -193,7 +235,7 @@ def _prune_expired_closed_cards(board_id: str) -> None:
     if len(retained) == len(cards):
         return
 
-    _reindex_column(retained, closed_column_id)
+    _reindex_column(board_id, retained, closed_column_id)
     _locked_write(
         board_id,
         retained,
@@ -254,7 +296,8 @@ def create_card(board_id: str, data: "CreateCard") -> Card | None:
     _stamp_closed_state(card, _closed_column_id(board_id), now)
     _record_history(card, "created", [])
     cards.append(card)
-    _reindex_column(cards, data.column_id)
+    _place_at(cards, card, pos)
+    _reindex_column(board_id, cards, data.column_id)
     _locked_write(board_id, cards, Event(type="card_created", detail=card.title))
     return card
 
@@ -286,7 +329,7 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
             card.column_id = data.column_id
             col_changed = True
     if data.position is not None:
-        card.position = data.position
+        _place_at(cards, card, data.position)
     if data.priority is not None:
         card.priority = data.priority
     if data.labels is not None:
@@ -297,9 +340,9 @@ def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
             card.metadata[CLOSED_AT_METADATA_KEY] = existing_closed_at
 
     if col_changed or data.position is not None:
-        _reindex_column(cards, card.column_id)
+        _reindex_column(board_id, cards, card.column_id)
         if col_changed and old_col != card.column_id:
-            _reindex_column(cards, old_col)
+            _reindex_column(board_id, cards, old_col)
 
     _stamp_closed_state(card, closed_column_id, now)
     _record_history(card, "updated", _diff(before, _snapshot(card)))
@@ -338,7 +381,7 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
 
     col_cards = [c for c in cards if c.column_id == data.column_id and c.id != card_id]
     pos = data.position if data.position is not None else len(col_cards)
-    card.position = min(pos, len(col_cards))
+    _place_at(cards, card, min(pos, len(col_cards)))
 
     # Cascade column move to all descendants
     if old_col != data.column_id:
@@ -354,9 +397,9 @@ def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
     _stamp_closed_state(card, closed_column_id, now)
     _record_history(card, "moved", _diff(before, _snapshot(card)))
     card.updated_at = now
-    _reindex_column(cards, data.column_id)
+    _reindex_column(board_id, cards, data.column_id)
     if old_col != data.column_id:
-        _reindex_column(cards, old_col)
+        _reindex_column(board_id, cards, old_col)
     _locked_write(board_id, cards, Event(
         type="card_moved",
         detail=f"{card.title}: {old_col[:8]}… → {data.column_id[:8]}…",
@@ -371,11 +414,10 @@ def delete_card(board_id: str, card_id: str) -> bool:
         return False
     col_id = card.column_id
     cards = [c for c in cards if c.id != card_id]
-    _reindex_column(cards, col_id)
+    _reindex_column(board_id, cards, col_id)
     _locked_write(board_id, cards, Event(type="card_deleted", detail=card_id))
     # Same orphan-cleanup pattern board_store.delete_column already applies
     # to cards -- a deleted card must not leave dangling edges behind.
-    from edge_store import delete_edges_for_card
     delete_edges_for_card(board_id, card_id)
     return True
 

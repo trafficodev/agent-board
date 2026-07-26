@@ -48,6 +48,16 @@ def _locked_write(board_id: str, edges: list[Edge], event: Event | None = None) 
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def _reorder_dependents(board_id: str) -> None:
+    """A dependency-ordered column reads its order off this graph, so every
+    edge write has to let the card store re-derive it. Called after the edge
+    file is written and its lock released — the card store takes the same
+    per-board lock."""
+    from card_store import reindex_dag_columns
+
+    reindex_dag_columns(board_id)
+
+
 def list_edges(board_id: str, card_id: str | None = None, type: str | None = None) -> list[Edge]:
     edges = _read_edges(board_id)
     if card_id:
@@ -77,6 +87,7 @@ def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
     _locked_write(board_id, edges, Event(
         type="edge_created", detail=f"{data.type}: {data.from_card_id[:8]}… → {data.to_card_id[:8]}…",
     ))
+    _reorder_dependents(board_id)
     return edge
 
 
@@ -87,6 +98,7 @@ def delete_edge(board_id: str, edge_id: str) -> bool:
         return False
     edges = [e for e in edges if e.id != edge_id]
     _locked_write(board_id, edges, Event(type="edge_deleted", detail=edge_id))
+    _reorder_dependents(board_id)
     return True
 
 
@@ -98,3 +110,4 @@ def delete_edges_for_card(board_id: str, card_id: str) -> None:
     remaining = [e for e in edges if e.from_card_id != card_id and e.to_card_id != card_id]
     if len(remaining) != len(edges):
         _write_edges(board_id, remaining)
+        _reorder_dependents(board_id)
