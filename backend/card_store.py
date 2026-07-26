@@ -29,7 +29,7 @@ import card_history
 from board_store import get_board
 from card_diff import diff_snapshots, snapshot_of
 from dag_order import dag_sort
-from edge_store import delete_edges_for_card, list_edges
+from edge_store import read_edges, write_edges
 
 CLOSED_CARD_TTL = timedelta(days=3)
 CLOSED_AT_METADATA_KEY = "closed_at"
@@ -136,16 +136,21 @@ def _place_at(cards: list[Card], card: Card, position: int) -> None:
     card.position = position
 
 
-def _reindex_column(board_id: str, cards: list[Card], column_id: str) -> None:
+def _reindex_column(board_id: str, cards: list[Card], column_id: str, edges: list) -> None:
     """Sort cards within a column by position, then reassign sequential
     positions. A dependency-ordered column is additionally run through the
-    blocking graph, so a blocker always sits above what waits on it."""
+    blocking graph, so a blocker always sits above what waits on it.
+
+    Edges come from the caller's transaction rather than off disk, because a
+    transaction that just removed some would otherwise order the column by a
+    graph that no longer exists.
+    """
     col_cards = sorted(
         [c for c in cards if c.column_id == column_id],
         key=lambda c: c.position,
     )
     if column_id in _dag_ordered_column_ids(board_id):
-        col_cards = dag_sort(col_cards, list_edges(board_id))
+        col_cards = dag_sort(col_cards, edges)
     for i, c in enumerate(col_cards):
         c.position = i
 
@@ -179,24 +184,41 @@ def _with_lock(board_id: str) -> Path:
 
 
 class _Transaction:
-    """The cards a mutator is working on, plus the journal records it produced.
+    """The cards and edges a mutator is working on, plus the journal records it
+    produced.
 
     Nothing is written until the mutator sets ``commit``, so an early return or
-    a raised exception leaves the board exactly as it was.
+    a raised exception leaves the board exactly as it was. Edges live here too
+    because they share the board's lock: cleaning them up after the commit
+    would leave a window where a card is gone but the edges pointing at it are
+    not, and would let a cleanup failure report a batch as failed after it had
+    already landed.
     """
 
-    def __init__(self, cards: list[Card]):
+    def __init__(self, cards: list[Card], edges: list):
         self.cards = cards
+        self.edges = edges
         self.events: list[Event] = []
+        self.edges_dirty = False
         self.commit = False
 
     def record(self, *events: Event) -> None:
         self.events.extend(events)
         self.commit = True
 
+    def drop_edges_for(self, card_id: str) -> None:
+        """A deleted card must not leave edges pointing at it."""
+        remaining = [
+            e for e in self.edges
+            if e.from_card_id != card_id and e.to_card_id != card_id
+        ]
+        if len(remaining) != len(self.edges):
+            self.edges = remaining
+            self.edges_dirty = True
+
 
 @contextmanager
-def _board_transaction(board_id: str):
+def board_transaction(board_id: str):
     """Read, mutate and write a board's cards under a single lock.
 
     The read has to happen inside the lock: a mutator rewrites the whole cards
@@ -209,10 +231,12 @@ def _board_transaction(board_id: str):
     with open(lock_path, "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
-            tx = _Transaction(_read_cards(board_id))
+            tx = _Transaction(_read_cards(board_id), read_edges(board_id))
             yield tx
             if tx.commit:
                 _write_cards(board_id, tx.cards)
+                if tx.edges_dirty:
+                    write_edges(board_id, tx.edges)
                 if tx.events:
                     with open(events_path(board_id), "a") as f:
                         f.writelines(event.model_dump_json() + "\n" for event in tx.events)
@@ -227,10 +251,10 @@ def reindex_dag_columns(board_id: str) -> None:
     column_ids = _dag_ordered_column_ids(board_id)
     if not column_ids:
         return
-    with _board_transaction(board_id) as tx:
+    with board_transaction(board_id) as tx:
         before = {c.id: c.position for c in tx.cards}
         for column_id in column_ids:
-            _reindex_column(board_id, tx.cards, column_id)
+            _reindex_column(board_id, tx.cards, column_id, tx.edges)
         if any(before[c.id] != c.position for c in tx.cards):
             tx.record(Event(type="cards_reordered", board_id=board_id, detail="dependency order"))
 
@@ -267,7 +291,7 @@ def _prune_expired_closed_cards(board_id: str) -> None:
     if not closed_column_id:
         return
 
-    with _board_transaction(board_id) as tx:
+    with board_transaction(board_id) as tx:
         cutoff = _now() - CLOSED_CARD_TTL
         retained = [
             card for card in tx.cards
@@ -278,7 +302,7 @@ def _prune_expired_closed_cards(board_id: str) -> None:
             return
 
         tx.cards = retained
-        _reindex_column(board_id, tx.cards, closed_column_id)
+        _reindex_column(board_id, tx.cards, closed_column_id, tx.edges)
         tx.record(Event(
             type="closed_cards_pruned",
             board_id=board_id,
@@ -308,85 +332,111 @@ def get_card(board_id: str, card_id: str) -> Card | None:
     return next((c for c in cards if c.id == card_id), None)
 
 
-def create_card(board_id: str, data: CreateCard) -> Card | None:
+def apply_create(tx: _Transaction, board_id: str, data: CreateCard) -> Card | None:
+    """Create one card inside an already-open transaction.
+
+    The public single-card entry points and the bulk executor both route
+    through the apply_* helpers, so batching a change can never drift from
+    doing it one at a time.
+    """
     board = get_board(board_id)
-    if not board:
-        return None
-    col_ids = [c.id for c in board.columns]
-    if data.column_id not in col_ids:
+    if not board or data.column_id not in [c.id for c in board.columns]:
         return None
 
-    with _board_transaction(board_id) as tx:
-        now = _now()
-        col_cards = [c for c in tx.cards if c.column_id == data.column_id]
-        pos = data.position if data.position is not None else len(col_cards)
-        pos = min(pos, len(col_cards))
+    now = _now()
+    col_cards = [c for c in tx.cards if c.column_id == data.column_id]
+    pos = data.position if data.position is not None else len(col_cards)
+    pos = min(pos, len(col_cards))
 
-        card = Card(
-            board_id=board_id,
-            external_id=data.external_id,
-            title=data.title,
-            body=data.body,
-            column_id=data.column_id,
-            parent_id=data.parent_id,
-            position=pos,
-            priority=data.priority,
-            labels=[l.lower() for l in data.labels],
-            metadata=data.metadata,
-        )
-        _stamp_closed_state(card, _closed_column_id(board_id), now)
-        tx.record(_record(card, "created", {}, "card_created"))
-        tx.cards.append(card)
-        _place_at(tx.cards, card, pos)
-        _reindex_column(board_id, tx.cards, data.column_id)
-        return card
+    card = Card(
+        board_id=board_id,
+        external_id=data.external_id,
+        title=data.title,
+        body=data.body,
+        column_id=data.column_id,
+        parent_id=data.parent_id,
+        position=pos,
+        priority=data.priority,
+        labels=[l.lower() for l in data.labels],
+        metadata=data.metadata,
+    )
+    _stamp_closed_state(card, _closed_column_id(board_id), now)
+    tx.record(_record(card, "created", {}, "card_created"))
+    tx.cards.append(card)
+    _place_at(tx.cards, card, pos)
+    _reindex_column(board_id, tx.cards, data.column_id, tx.edges)
+    return card
+
+
+def create_card(board_id: str, data: CreateCard) -> Card | None:
+    with board_transaction(board_id) as tx:
+        return apply_create(tx, board_id, data)
+
+
+def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard) -> Card | None:
+    """Update one card inside an already-open transaction."""
+    card = next((c for c in tx.cards if c.id == card_id), None)
+    if not card:
+        return None
+
+    # A column that does not exist is refused rather than quietly ignored:
+    # silently keeping the old lane would report a move that never happened.
+    if data.column_id is not None:
+        board = get_board(board_id)
+        if not board or data.column_id not in [c.id for c in board.columns]:
+            return None
+    if "parent_id" in data.model_fields_set and data.parent_id:
+        # Re-parenting a card under its own descendant makes a cycle that
+        # wedges every later walk of the tree, so it is refused outright.
+        if data.parent_id == card_id:
+            return None
+        if not any(c.id == data.parent_id for c in tx.cards):
+            return None
+        if any(c.id == data.parent_id for c in _collect_descendants(tx.cards, card_id)):
+            return None
+
+    closed_column_id = _closed_column_id(board_id)
+    now = _now()
+    before = _snapshot(card)
+    existing_closed_at = card.metadata.get(CLOSED_AT_METADATA_KEY)
+    if data.external_id is not None:
+        card.external_id = data.external_id
+    if data.title is not None:
+        card.title = data.title
+    if data.body is not None:
+        card.body = data.body
+    if "parent_id" in data.model_fields_set:
+        card.parent_id = data.parent_id
+    old_col = card.column_id
+    col_changed = False
+    if data.column_id is not None:
+        card.column_id = data.column_id
+        col_changed = True
+    if data.position is not None:
+        _place_at(tx.cards, card, data.position)
+    if data.priority is not None:
+        card.priority = data.priority
+    if data.labels is not None:
+        card.labels = [l.lower() for l in data.labels]
+    if data.metadata is not None:
+        card.metadata = dict(data.metadata)
+        if existing_closed_at is not None and card.column_id == closed_column_id:
+            card.metadata[CLOSED_AT_METADATA_KEY] = existing_closed_at
+
+    if col_changed or data.position is not None:
+        _reindex_column(board_id, tx.cards, card.column_id, tx.edges)
+        if col_changed and old_col != card.column_id:
+            _reindex_column(board_id, tx.cards, old_col, tx.edges)
+
+    _stamp_closed_state(card, closed_column_id, now)
+    tx.record(_record(card, "updated", before, "card_updated"))
+    card.updated_at = now
+    return card
 
 
 def update_card(board_id: str, card_id: str, data: UpdateCard) -> Card | None:
-    with _board_transaction(board_id) as tx:
-        card = next((c for c in tx.cards if c.id == card_id), None)
-        if not card:
-            return None
-
-        closed_column_id = _closed_column_id(board_id)
-        now = _now()
-        before = _snapshot(card)
-        existing_closed_at = card.metadata.get(CLOSED_AT_METADATA_KEY)
-        if data.external_id is not None:
-            card.external_id = data.external_id
-        if data.title is not None:
-            card.title = data.title
-        if data.body is not None:
-            card.body = data.body
-        if "parent_id" in data.model_fields_set:
-            card.parent_id = data.parent_id
-        old_col = card.column_id
-        col_changed = False
-        if data.column_id is not None:
-            board = get_board(board_id)
-            if board and data.column_id in [c.id for c in board.columns]:
-                card.column_id = data.column_id
-                col_changed = True
-        if data.position is not None:
-            _place_at(tx.cards, card, data.position)
-        if data.priority is not None:
-            card.priority = data.priority
-        if data.labels is not None:
-            card.labels = [l.lower() for l in data.labels]
-        if data.metadata is not None:
-            card.metadata = dict(data.metadata)
-            if existing_closed_at is not None and card.column_id == closed_column_id:
-                card.metadata[CLOSED_AT_METADATA_KEY] = existing_closed_at
-
-        if col_changed or data.position is not None:
-            _reindex_column(board_id, tx.cards, card.column_id)
-            if col_changed and old_col != card.column_id:
-                _reindex_column(board_id, tx.cards, old_col)
-
-        _stamp_closed_state(card, closed_column_id, now)
-        tx.record(_record(card, "updated", before, "card_updated"))
-        card.updated_at = now
-        return card
+    with board_transaction(board_id) as tx:
+        return apply_update(tx, board_id, card_id, data)
 
 
 def _collect_descendants(cards: list[Card], parent_id: str) -> list[Card]:
@@ -399,84 +449,102 @@ def _collect_descendants(cards: list[Card], parent_id: str) -> list[Card]:
     return result
 
 
-def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
+def apply_move(tx: _Transaction, board_id: str, card_id: str, data: MoveCard) -> Card | None:
+    """Move one card, and its sub-tree, inside an already-open transaction."""
     board = get_board(board_id)
-    if not board:
+    if not board or data.column_id not in [c.id for c in board.columns]:
         return None
-    if data.column_id not in [c.id for c in board.columns]:
+    card = next((c for c in tx.cards if c.id == card_id), None)
+    if not card:
         return None
 
-    with _board_transaction(board_id) as tx:
-        card = next((c for c in tx.cards if c.id == card_id), None)
-        if not card:
-            return None
+    closed_column_id = _closed_column_id(board_id)
+    now = _now()
+    before = _snapshot(card)
+    old_col = card.column_id
+    card.column_id = data.column_id
 
-        closed_column_id = _closed_column_id(board_id)
-        now = _now()
-        before = _snapshot(card)
-        old_col = card.column_id
-        card.column_id = data.column_id
+    col_cards = [c for c in tx.cards if c.column_id == data.column_id and c.id != card_id]
+    pos = data.position if data.position is not None else len(col_cards)
+    _place_at(tx.cards, card, min(pos, len(col_cards)))
 
-        col_cards = [c for c in tx.cards if c.column_id == data.column_id and c.id != card_id]
-        pos = data.position if data.position is not None else len(col_cards)
-        _place_at(tx.cards, card, min(pos, len(col_cards)))
+    # Cascade column move to all descendants
+    events: list[Event] = []
+    if old_col != data.column_id:
+        for desc in _collect_descendants(tx.cards, card_id):
+            desc_before = _snapshot(desc)
+            desc.column_id = data.column_id
+            _stamp_closed_state(desc, closed_column_id, now)
+            # A sub-task dragged along by its parent still changed lane, so
+            # it records the move under its own history.
+            events.append(_record(desc, "moved", desc_before, "card_moved"))
+            desc.updated_at = now
 
-        # Cascade column move to all descendants
-        events: list[Event] = []
-        if old_col != data.column_id:
-            for desc in _collect_descendants(tx.cards, card_id):
-                desc_before = _snapshot(desc)
-                desc.column_id = data.column_id
-                _stamp_closed_state(desc, closed_column_id, now)
-                # A sub-task dragged along by its parent still changed lane, so
-                # it records the move under its own history.
-                events.append(_record(desc, "moved", desc_before, "card_moved"))
-                desc.updated_at = now
-
-        _stamp_closed_state(card, closed_column_id, now)
-        events.append(_record(
-            card, "moved", before, "card_moved",
-            detail=f"{card.title}: {old_col[:8]}… → {data.column_id[:8]}…",
-        ))
-        card.updated_at = now
-        _reindex_column(board_id, tx.cards, data.column_id)
-        if old_col != data.column_id:
-            _reindex_column(board_id, tx.cards, old_col)
-        tx.record(*events)
-        return card
+    _stamp_closed_state(card, closed_column_id, now)
+    events.append(_record(
+        card, "moved", before, "card_moved",
+        detail=f"{card.title}: {old_col[:8]}… → {data.column_id[:8]}…",
+    ))
+    card.updated_at = now
+    _reindex_column(board_id, tx.cards, data.column_id, tx.edges)
+    if old_col != data.column_id:
+        _reindex_column(board_id, tx.cards, old_col, tx.edges)
+    tx.record(*events)
+    return card
 
 
-def delete_card(board_id: str, card_id: str) -> bool:
-    cards = _read_cards(board_id)
-    with _board_transaction(board_id) as tx:
-        card = next((c for c in tx.cards if c.id == card_id), None)
-        if not card:
-            return False
-        col_id = card.column_id
-        tx.cards = [c for c in tx.cards if c.id != card_id]
-        _reindex_column(board_id, tx.cards, col_id)
-        session_id, system = acting_session()
-        # The card is going away but its history is not: the journal keeps its
-        # final state, so a deleted card can still be inspected afterwards.
-        tx.record(Event(
-            type="card_deleted",
-            detail=card.title,
-            board_id=board_id,
-            card_id=card_id,
-            session_id=session_id,
-            system=system,
-            action="deleted",
-            snapshot=_snapshot(card),
-        ))
-    # Same orphan-cleanup pattern board_store.delete_column already applies
-    # to cards -- a deleted card must not leave dangling edges behind. Runs
-    # after the transaction because it takes the same per-board lock.
-    delete_edges_for_card(board_id, card_id)
+def move_card(board_id: str, card_id: str, data: MoveCard) -> Card | None:
+    with board_transaction(board_id) as tx:
+        return apply_move(tx, board_id, card_id, data)
+
+
+def apply_delete(tx: _Transaction, board_id: str, card_id: str) -> bool:
+    """Remove one card inside an already-open transaction.
+
+    Everything that pointed at the card goes with it: its edges are dropped and
+    its direct children are promoted to top level, so a delete never leaves a
+    reference to a card that is no longer there.
+    """
+    card = next((c for c in tx.cards if c.id == card_id), None)
+    if not card:
+        return False
+    col_id = card.column_id
+    tx.cards = [c for c in tx.cards if c.id != card_id]
+    tx.drop_edges_for(card_id)
+
+    now = _now()
+    for child in [c for c in tx.cards if c.parent_id == card_id]:
+        child_before = _snapshot(child)
+        child.parent_id = None
+        # Losing a parent is a change to the child, so it says so in its own
+        # history rather than silently acquiring a dangling reference.
+        tx.record(_record(child, "orphaned", child_before, "card_updated"))
+        child.updated_at = now
+
+    _reindex_column(board_id, tx.cards, col_id, tx.edges)
+    session_id, system = acting_session()
+    # The card is going away but its history is not: the journal keeps its
+    # final state, so a deleted card can still be inspected afterwards.
+    tx.record(Event(
+        type="card_deleted",
+        detail=card.title,
+        board_id=board_id,
+        card_id=card_id,
+        session_id=session_id,
+        system=system,
+        action="deleted",
+        snapshot=_snapshot(card),
+    ))
     return True
 
 
+def delete_card(board_id: str, card_id: str) -> bool:
+    with board_transaction(board_id) as tx:
+        return apply_delete(tx, board_id, card_id)
+
+
 def add_session(board_id: str, card_id: str, data: AddSession) -> Card | None:
-    with _board_transaction(board_id) as tx:
+    with board_transaction(board_id) as tx:
         card = next((c for c in tx.cards if c.id == card_id), None)
         if not card:
             return None
@@ -515,37 +583,42 @@ def is_open_question(note: CardNote) -> bool:
     return note.kind == "question" and not (note.answer or "").strip()
 
 
-def add_note(board_id: str, card_id: str, data: AddNote) -> Card | None:
+def apply_note(tx: _Transaction, board_id: str, card_id: str, data: AddNote) -> Card | None:
+    """Leave one note or question inside an already-open transaction."""
     text = (data.text or "").strip()
     if not text:
         return None
-    with _board_transaction(board_id) as tx:
-        card = next((c for c in tx.cards if c.id == card_id), None)
-        if not card:
-            return None
+    card = next((c for c in tx.cards if c.id == card_id), None)
+    if not card:
+        return None
 
-        session_id, _ = acting_session()
-        note = CardNote(kind=data.kind, text=text[:_MAX_NOTE_CHARS], session_id=session_id)
-        card.notes.append(note)
-        if len(card.notes) > _MAX_NOTES:
-            del card.notes[:-_MAX_NOTES]
-        card.updated_at = _now()
-        tx.record(_record(
-            card,
-            "asked" if data.kind == "question" else "noted",
-            _snapshot(card),
-            "card_note_added",
-            detail=f"{data.kind} on {card.title}",
-            force=True,
-        ))
-        return card
+    session_id, _ = acting_session()
+    note = CardNote(kind=data.kind, text=text[:_MAX_NOTE_CHARS], session_id=session_id)
+    card.notes.append(note)
+    if len(card.notes) > _MAX_NOTES:
+        del card.notes[:-_MAX_NOTES]
+    card.updated_at = _now()
+    tx.record(_record(
+        card,
+        "asked" if data.kind == "question" else "noted",
+        _snapshot(card),
+        "card_note_added",
+        detail=f"{data.kind} on {card.title}",
+        force=True,
+    ))
+    return card
+
+
+def add_note(board_id: str, card_id: str, data: AddNote) -> Card | None:
+    with board_transaction(board_id) as tx:
+        return apply_note(tx, board_id, card_id, data)
 
 
 def answer_note(board_id: str, card_id: str, note_id: str, data: AnswerNote) -> Card | None:
     answer = (data.answer or "").strip()
     if not answer:
         return None
-    with _board_transaction(board_id) as tx:
+    with board_transaction(board_id) as tx:
         card = next((c for c in tx.cards if c.id == card_id), None)
         if not card:
             return None
@@ -601,7 +674,7 @@ def revert_card(board_id: str, card_id: str, data: RevertCard) -> Card | None:
     journal: the card's history keeps both the versions that were undone and
     the act of undoing them.
     """
-    with _board_transaction(board_id) as tx:
+    with board_transaction(board_id) as tx:
         versions = card_history.card_versions(board_id, card_id)
         if data.version < 1 or data.version > len(versions):
             return None
@@ -647,9 +720,9 @@ def revert_card(board_id: str, card_id: str, data: RevertCard) -> Card | None:
             force=True,
         ))
         card.updated_at = now
-        _reindex_column(board_id, tx.cards, card.column_id)
+        _reindex_column(board_id, tx.cards, card.column_id, tx.edges)
         if old_col != card.column_id:
-            _reindex_column(board_id, tx.cards, old_col)
+            _reindex_column(board_id, tx.cards, old_col, tx.edges)
         return card
 
 

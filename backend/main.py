@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 import board_store as bs
 import canvas_sync
+import card_bulk
 import card_history
 import card_store as cs
 import edge_store as es
@@ -15,6 +16,7 @@ from models import (
     AddNote,
     AddSession,
     AnswerNote,
+    BulkCards,
     CreateBoard,
     CreateCard,
     CreateColumn,
@@ -274,6 +276,17 @@ def api_create_card(board_id: str, body: CreateCard):
         raise HTTPException(400, "Invalid column_id or board")
     _sync_board_if_enabled(board_id)
     return card
+
+
+@app.post("/api/boards/{board_id}/cards/bulk")
+def api_bulk_cards(board_id: str, body: BulkCards):
+    """Apply an ordered batch of card operations atomically."""
+    _board_or_404(board_id)
+    result = card_bulk.bulk_cards(board_id, body)
+    if not result.applied:
+        raise HTTPException(422, result.model_dump())
+    _sync_board_if_enabled(board_id)
+    return result
 
 
 @app.get("/api/boards/{board_id}/cards/{card_id}")

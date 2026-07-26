@@ -143,6 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
 
+    bulk_cards = sub.add_parser("bulk_cards")
+    bulk_cards.add_argument("board_id")
+    bulk_cards.add_argument("operations", help="JSON array of operations to apply atomically")
+    bulk_cards.set_defaults(
+        func=lambda args: client.bulk_cards(args.board_id, json.loads(args.operations))
+    )
+
     get_card = sub.add_parser("get_card")
     get_card.add_argument("board_id")
     get_card.add_argument("card_id")

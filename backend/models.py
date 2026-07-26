@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -227,6 +226,89 @@ class AnswerNote(BaseModel):
 
 class RevertCard(BaseModel):
     version: int  # as reported by the card's history, 1-based
+
+
+# --- Bulk card operations ---
+#
+# One ordered batch, applied in a single board transaction, so an agent can
+# rewrite a whole slice of a board without paying a round-trip per card. A
+# create names itself with `ref`; any later op targets it as "@<ref>", which
+# is what lets a parent and its sub-tasks be built in one call.
+
+MAX_BULK_OPERATIONS = 500
+
+
+class BulkCreate(BaseModel):
+    op: Literal["create"]
+    ref: str = ""  # names this new card for later ops in the same batch
+    external_id: str = ""
+    title: str
+    body: str = ""
+    column_id: str
+    parent_id: str | None = None
+    position: int | None = None
+    priority: Literal["critical", "high", "medium", "low"] = "medium"
+    labels: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BulkUpdate(BaseModel):
+    op: Literal["update"]
+    card_id: str
+    external_id: str | None = None
+    title: str | None = None
+    body: str | None = None
+    column_id: str | None = None
+    parent_id: str | None = None
+    position: int | None = None
+    priority: Literal["critical", "high", "medium", "low"] | None = None
+    labels: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class BulkMove(BaseModel):
+    op: Literal["move"]
+    card_id: str
+    column_id: str
+    position: int | None = None
+
+
+class BulkDelete(BaseModel):
+    op: Literal["delete"]
+    card_id: str
+
+
+class BulkNote(BaseModel):
+    op: Literal["note"]
+    card_id: str
+    text: str
+    kind: Literal["note", "question"] = "note"
+
+
+BulkOperation = Annotated[
+    BulkCreate | BulkUpdate | BulkMove | BulkDelete | BulkNote,
+    Field(discriminator="op"),
+]
+
+
+class BulkCards(BaseModel):
+    operations: list[BulkOperation] = Field(min_length=1, max_length=MAX_BULK_OPERATIONS)
+
+
+class BulkOperationResult(BaseModel):
+    index: int
+    op: str
+    card_id: str = ""
+    ref: str = ""
+
+
+class BulkCardsResult(BaseModel):
+    """Nothing is applied unless every operation succeeds, so ``applied``
+    describes the whole batch rather than any single operation."""
+    applied: bool
+    results: list[BulkOperationResult] = Field(default_factory=list)
+    failed_index: int | None = None
+    error: str = ""
 
 
 class CreateEdge(BaseModel):

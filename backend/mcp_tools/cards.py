@@ -54,6 +54,55 @@ TOOLS = [
         },
     ),
     Tool(
+        name="bulk_cards",
+        description=(
+            "Apply MANY card operations to one board in a SINGLE call. Prefer this over calling "
+            "create_card/update_card/move_card/delete_card in a loop — it is one round-trip instead "
+            "of one per card, and the whole batch lands together or not at all.\n"
+            "Operations run in order. Each entry is an object with 'op' set to one of:\n"
+            "  create — title, column_id, and optionally body, parent_id, priority, labels, metadata, position\n"
+            "  update — card_id, plus any of title, body, column_id, parent_id, priority, labels, metadata, position\n"
+            "  move   — card_id, column_id, optionally position (sub-tasks follow their parent)\n"
+            "  delete — card_id\n"
+            "  note   — card_id, text, optionally kind ('note' or 'question')\n"
+            "A create may set 'ref' to name itself; any later operation can then use \"@<ref>\" wherever a "
+            "card_id or parent_id is expected, so a parent and its sub-tasks can be built in one call.\n"
+            "If any operation fails, NOTHING is applied and the response reports failed_index and error."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "description": "Ordered operations to apply atomically.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "enum": ["create", "update", "move", "delete", "note"]},
+                            "ref": {"type": "string", "description": "On create: name this card for later ops as \"@ref\""},
+                            "card_id": {"type": "string", "description": "Target card, or \"@ref\" from an earlier create"},
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                            "column_id": {"type": "string"},
+                            "parent_id": {"type": ["string", "null"]},
+                            "position": {"type": "integer"},
+                            "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                            "labels": {"type": "array", "items": {"type": "string"}},
+                            "metadata": {"type": "object"},
+                            "text": {"type": "string", "description": "note text"},
+                            "kind": {"type": "string", "enum": ["note", "question"]},
+                        },
+                        "required": ["op"],
+                    },
+                },
+            },
+            "required": ["board_id", "operations"],
+        },
+    ),
+    Tool(
         name="get_card",
         description="Get a card by ID",
         inputSchema={
@@ -137,6 +186,8 @@ def dispatch(name: str, arguments: dict):
                 external_id=arguments.get("external_id", ""),
                 metadata=arguments.get("metadata"),
             )
+        case "bulk_cards":
+            return client.bulk_cards(arguments["board_id"], arguments["operations"])
         case "get_card":
             return client.get_card(arguments["board_id"], arguments["card_id"])
         case "update_card":

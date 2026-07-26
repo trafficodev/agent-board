@@ -296,6 +296,10 @@ def get_card(board_id: str, card_id: str) -> dict:
     return _req("GET", f"/api/boards/{board_id}/cards/{card_id}")
 
 
+def bulk_cards(board_id: str, operations: list[dict]) -> dict:
+    return _req("POST", f"/api/boards/{board_id}/cards/bulk", {"operations": operations})
+
+
 def update_card(board_id: str, card_id: str, **fields) -> dict:
     return _req("PATCH", f"/api/boards/{board_id}/cards/{card_id}", fields)
 

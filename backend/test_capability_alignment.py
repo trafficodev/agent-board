@@ -22,6 +22,7 @@ UI_CAPABILITIES = {
     "list_cards",
     "search_cards",
     "create_card",
+    "bulk_cards",
     "get_card",
     "update_card",
     "move_card",
