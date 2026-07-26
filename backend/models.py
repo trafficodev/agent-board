@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 def _now() -> datetime:
@@ -104,10 +104,48 @@ class Board(BaseModel):
 # --- Event log ---
 
 class Event(BaseModel):
+    """One durable, append-only fact about a board.
+
+    For card mutations this log -- not the card -- is the authoritative
+    history: the card carries a capped, truncated projection of it, while the
+    journal keeps every version in full so a card can be reconstructed as of
+    any point in time and survives the card's own deletion.
+    """
+    id: str = Field(default_factory=_uid)
     timestamp: datetime = Field(default_factory=_now)
     type: str
-    actor: str = ""
     detail: str = ""
+    # Structured attribution. Queryable fields rather than a display string,
+    # so "what did session X do" is answerable without parsing prose.
+    board_id: str = ""
+    card_id: str = ""
+    session_id: str = ""
+    system: str = ""
+    action: str = ""
+    # Whole tracked-field state of the card right after this mutation.
+    snapshot: dict[str, Any] | None = None
+    # Journals written before attribution was structured stored a bare actor
+    # string. Reading it back keeps those events attributed; nothing writes it.
+    legacy_actor: str = Field(default="", validation_alias="actor", exclude=True)
+
+    @computed_field
+    @property
+    def actor(self) -> str:
+        """Display name for whoever caused this. Derived, never stored, so it
+        cannot drift from the identity fields it summarizes."""
+        return self.system or self.session_id or self.legacy_actor
+
+
+class CardVersion(BaseModel):
+    """One point in a card's life, rebuilt from the journal."""
+    version: int
+    event_id: str
+    timestamp: datetime
+    action: str
+    session_id: str = ""
+    system: str = ""
+    changes: list[FieldChange] = Field(default_factory=list)
+    snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
 # --- Request models ---
@@ -185,6 +223,10 @@ class AddNote(BaseModel):
 class AnswerNote(BaseModel):
     answer: str
     answered_by: str = ""
+
+
+class RevertCard(BaseModel):
+    version: int  # as reported by the card's history, 1-based
 
 
 class CreateEdge(BaseModel):

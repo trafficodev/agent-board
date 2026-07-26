@@ -1,11 +1,13 @@
 import re
+from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import board_store as bs
 import canvas_sync
+import card_history
 import card_store as cs
 import edge_store as es
 import search_logic
@@ -19,6 +21,7 @@ from models import (
     CreateEdge,
     EnsureProjectBoard,
     MoveCard,
+    RevertCard,
     UpdateBoard,
     UpdateCard,
     UpdateColumn,
@@ -356,6 +359,50 @@ def api_open_questions(board_id: str | None = None):
         _board_or_404(board_id)
     items = cs.open_questions(board_id)
     return {"count": len(items), "questions": items}
+
+
+# --- Card history (the journal, not the card's capped projection) ---
+
+@app.get("/api/boards/{board_id}/cards/{card_id}/history")
+def api_card_history(board_id: str, card_id: str, at: datetime | None = None):
+    """Every recorded version of a card. With ``at``, the single version the
+    card stood at that moment instead. Answers for deleted cards too, because
+    the journal outlives them."""
+    _board_or_404(board_id)
+    _validate_id(card_id, "card_id")
+    if at is not None:
+        version = card_history.card_as_of(board_id, card_id, at)
+        if not version:
+            raise HTTPException(404, "Card did not exist at that time")
+        return version
+    versions = card_history.card_versions(board_id, card_id)
+    if not versions:
+        raise HTTPException(404, "No history for that card")
+    return {"card_id": card_id, "count": len(versions), "versions": versions}
+
+
+@app.post("/api/boards/{board_id}/cards/{card_id}/revert")
+def api_revert_card(board_id: str, card_id: str, body: RevertCard):
+    _board_or_404(board_id)
+    _validate_id(card_id, "card_id")
+    card = cs.revert_card(board_id, card_id, body)
+    if not card:
+        raise HTTPException(404, "Card, version, or its original column no longer exists")
+    _sync_board_if_enabled(board_id)
+    return card
+
+
+@app.get("/api/sessions/{session_id}/activity")
+def api_session_activity(
+    session_id: str,
+    board_id: str | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    """What one session did, across boards."""
+    if board_id:
+        _board_or_404(board_id)
+    events = card_history.session_activity(session_id, board_id, limit)
+    return {"session_id": session_id, "count": len(events), "events": events}
 
 
 # --- Edges (arbitrary typed connections between two cards) ---

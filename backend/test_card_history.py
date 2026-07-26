@@ -126,10 +126,6 @@ class CardHistoryTest(unittest.TestCase):
         self.assertNotIn("metadata", fields)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RequestSessionAttributionTest(unittest.TestCase):
     """The API server is shared and belongs to no session, so HTTP callers
     carry their identity in a header that the store reads per request."""

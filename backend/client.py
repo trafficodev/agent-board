@@ -336,6 +336,20 @@ def get_events(board_id: str, limit: int = 100) -> list[dict]:
     return _req("GET", f"/api/boards/{board_id}/events?limit={limit}")
 
 
+def get_card_history(board_id: str, card_id: str, at: str = "") -> dict:
+    suffix = f"?at={urllib.parse.quote(at)}" if at else ""
+    return _req("GET", f"/api/boards/{board_id}/cards/{card_id}/history{suffix}")
+
+
+def revert_card(board_id: str, card_id: str, version: int) -> dict:
+    return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/revert", {"version": version})
+
+
+def get_session_activity(session_id: str, board_id: str = "", limit: int = 200) -> dict:
+    query = f"?limit={limit}" + (f"&board_id={board_id}" if board_id else "")
+    return _req("GET", f"/api/sessions/{urllib.parse.quote(session_id)}/activity{query}")
+
+
 def list_edges(board_id: str, card_id: str | None = None, type: str | None = None) -> list[dict]:
     params = urllib.parse.urlencode({k: v for k, v in {"card_id": card_id, "type": type}.items() if v})
     path = f"/api/boards/{board_id}/edges"

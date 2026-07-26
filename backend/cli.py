@@ -211,6 +211,32 @@ def build_parser() -> argparse.ArgumentParser:
     get_events.add_argument("--limit", type=int, default=100)
     get_events.set_defaults(func=lambda args: client.get_events(args.board_id, args.limit))
 
+    get_card_history = sub.add_parser("get_card_history")
+    get_card_history.add_argument("board_id")
+    get_card_history.add_argument("card_id")
+    get_card_history.add_argument("--at", default="", help="ISO 8601 timestamp for a point-in-time view")
+    get_card_history.set_defaults(
+        func=lambda args: client.get_card_history(args.board_id, args.card_id, at=args.at)
+    )
+
+    revert_card = sub.add_parser("revert_card")
+    revert_card.add_argument("board_id")
+    revert_card.add_argument("card_id")
+    revert_card.add_argument("version", type=int)
+    revert_card.set_defaults(
+        func=lambda args: client.revert_card(args.board_id, args.card_id, args.version)
+    )
+
+    get_session_activity = sub.add_parser("get_session_activity")
+    get_session_activity.add_argument("session_id")
+    get_session_activity.add_argument("--board-id", default="")
+    get_session_activity.add_argument("--limit", type=int, default=200)
+    get_session_activity.set_defaults(
+        func=lambda args: client.get_session_activity(
+            args.session_id, board_id=args.board_id, limit=args.limit
+        )
+    )
+
     list_edges = sub.add_parser("list_edges")
     list_edges.add_argument("board_id")
     list_edges.add_argument("--card-id")

@@ -73,6 +73,56 @@ TOOLS = [
             "properties": {"board_id": {"type": "string"}},
         },
     ),
+    Tool(
+        name="get_card_history",
+        description=(
+            "Every recorded version of a card — who changed it, when, and what changed — in full, "
+            "including versions older than the summary the card itself carries, and including cards "
+            "that were deleted. Pass 'at' (ISO 8601) to get the single version the card stood at that "
+            "moment instead of the whole trail."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "card_id": {"type": "string"},
+                "at": {"type": "string", "description": "ISO 8601 timestamp for a point-in-time view"},
+            },
+            "required": ["board_id", "card_id"],
+        },
+    ),
+    Tool(
+        name="revert_card",
+        description=(
+            "Restore a card's content to one of its earlier versions, as reported by get_card_history. "
+            "Recorded forward as a new version, so nothing in the history is rewritten or lost."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "card_id": {"type": "string"},
+                "version": {"type": "integer", "description": "1-based version from get_card_history"},
+            },
+            "required": ["board_id", "card_id", "version"],
+        },
+    ),
+    Tool(
+        name="get_session_activity",
+        description=(
+            "What one session did, newest first, across every board or just one. Use this to find out "
+            "what another session already changed before touching the same cards."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "board_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 200},
+            },
+            "required": ["session_id"],
+        },
+    ),
 ]
 
 
@@ -105,5 +155,23 @@ def dispatch(name: str, arguments: dict):
             return client.open_questions(arguments.get("board_id", ""))
         case "get_events":
             return client.get_events(arguments["board_id"], arguments.get("limit", 20))
+        case "get_card_history":
+            return client.get_card_history(
+                arguments["board_id"],
+                arguments["card_id"],
+                at=arguments.get("at", ""),
+            )
+        case "revert_card":
+            return client.revert_card(
+                arguments["board_id"],
+                arguments["card_id"],
+                arguments["version"],
+            )
+        case "get_session_activity":
+            return client.get_session_activity(
+                arguments["session_id"],
+                board_id=arguments.get("board_id", ""),
+                limit=arguments.get("limit", 200),
+            )
         case _:
             raise KeyError(name)
