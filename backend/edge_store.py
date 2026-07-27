@@ -30,20 +30,22 @@ def write_edges(board_id: str, edges: list[Edge]) -> None:
     p.write_text(json.dumps([e.model_dump(mode="json") for e in edges], indent=2, default=str))
 
 
-def _locked_write(board_id: str, edges: list[Edge], event: Event | None = None) -> None:
-    """Mirrors card_store._locked_write — same per-board lock file, so edge
-    writes and card writes (e.g. delete_card's edge cleanup) never race."""
+def _with_edge_transaction(board_id: str, mutate):
     from card_store import _with_lock
 
     lock_path = _with_lock(board_id)
     with open(lock_path, "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         try:
+            result, edges, event = mutate(read_edges(board_id))
+            if edges is None:
+                return result
             write_edges(board_id, edges)
             if event:
                 ep = events_path(board_id)
                 with open(ep, "a") as f:
                     f.write(event.model_dump_json() + "\n")
+            return result
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
@@ -72,31 +74,41 @@ def get_edge(board_id: str, edge_id: str) -> Edge | None:
 
 
 def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
-    from card_store import get_card
+    def mutate(edges):
+        from card_store import _read_cards
 
-    if not get_board(board_id):
+        if not get_board(board_id):
+            return None, None, None
+        card_ids = {card.id for card in _read_cards(board_id)}
+        if data.from_card_id not in card_ids or data.to_card_id not in card_ids:
+            return None, None, None
+        edge = Edge(
+            board_id=board_id, from_card_id=data.from_card_id, to_card_id=data.to_card_id,
+            type=data.type, label=data.label,
+        )
+        edges.append(edge)
+        return edge, edges, Event(
+            type="edge_created",
+            detail=f"{data.type}: {data.from_card_id[:8]}… → {data.to_card_id[:8]}…",
+        )
+
+    edge = _with_edge_transaction(board_id, mutate)
+    if edge is None:
         return None
-    if not get_card(board_id, data.from_card_id) or not get_card(board_id, data.to_card_id):
-        return None
-    edges = read_edges(board_id)
-    edge = Edge(
-        board_id=board_id, from_card_id=data.from_card_id, to_card_id=data.to_card_id,
-        type=data.type, label=data.label,
-    )
-    edges.append(edge)
-    _locked_write(board_id, edges, Event(
-        type="edge_created", detail=f"{data.type}: {data.from_card_id[:8]}… → {data.to_card_id[:8]}…",
-    ))
     _reorder_dependents(board_id)
     return edge
 
 
 def delete_edge(board_id: str, edge_id: str) -> bool:
-    edges = read_edges(board_id)
-    edge = next((e for e in edges if e.id == edge_id), None)
-    if not edge:
+    def mutate(edges):
+        edge = next((candidate for candidate in edges if candidate.id == edge_id), None)
+        if not edge:
+            return False, None, None
+        remaining = [candidate for candidate in edges if candidate.id != edge_id]
+        return True, remaining, Event(type="edge_deleted", detail=edge_id)
+
+    deleted = _with_edge_transaction(board_id, mutate)
+    if not deleted:
         return False
-    edges = [e for e in edges if e.id != edge_id]
-    _locked_write(board_id, edges, Event(type="edge_deleted", detail=edge_id))
     _reorder_dependents(board_id)
     return True

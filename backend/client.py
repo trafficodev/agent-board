@@ -224,6 +224,13 @@ def link_project_remote(board_id: str, remote_url: str) -> dict:
     return _req("POST", f"/api/boards/{board_id}/project-remotes", {"remote_url": remote_url})
 
 
+def consolidate_project_board(source_board_id: str, target_board_id: str) -> dict:
+    return _req("POST", "/api/projects/consolidate-board", {
+        "source_board_id": source_board_id,
+        "target_board_id": target_board_id,
+    })
+
+
 def delete_board(board_id: str) -> dict:
     return _req("DELETE", f"/api/boards/{board_id}")
 

@@ -12,6 +12,7 @@ UI_CAPABILITIES = {
     "create_board",
     "update_board",
     "link_project_remote",
+    "consolidate_project_board",
     "delete_board",
     "get_canvas_sync",
     "enable_canvas_sync",

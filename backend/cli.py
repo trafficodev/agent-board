@@ -53,6 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
         func=lambda args: client.link_project_remote(args.board_id, args.remote_url)
     )
 
+    consolidate_project_board = sub.add_parser("consolidate_project_board")
+    consolidate_project_board.add_argument("source_board_id")
+    consolidate_project_board.add_argument("target_board_id")
+    consolidate_project_board.set_defaults(
+        func=lambda args: client.consolidate_project_board(args.source_board_id, args.target_board_id)
+    )
+
     delete_board = sub.add_parser("delete_board")
     delete_board.add_argument("board_id")
     delete_board.set_defaults(func=lambda args: client.delete_board(args.board_id))

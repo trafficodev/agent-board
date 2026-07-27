@@ -78,6 +78,21 @@ TOOLS = [
         },
     ),
     Tool(
+        name="consolidate_project_board",
+        description=(
+            "Losslessly consolidate a source project board into a target board, "
+            "preserving cards, history, edges, columns, and repository remotes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "source_board_id": {"type": "string"},
+                "target_board_id": {"type": "string"},
+            },
+            "required": ["source_board_id", "target_board_id"],
+        },
+    ),
+    Tool(
         name="delete_board",
         description="Delete a board",
         inputSchema={"type": "object", "properties": {"board_id": {"type": "string"}}, "required": ["board_id"]},
@@ -166,6 +181,11 @@ def dispatch(name: str, arguments: dict):
             )
         case "link_project_remote":
             return client.link_project_remote(arguments["board_id"], arguments["remote_url"])
+        case "consolidate_project_board":
+            return client.consolidate_project_board(
+                arguments["source_board_id"],
+                arguments["target_board_id"],
+            )
         case "delete_board":
             return client.delete_board(arguments["board_id"])
         case "import_board":

@@ -173,6 +173,11 @@ class LinkProjectRemote(BaseModel):
     remote_url: str
 
 
+class ConsolidateProjectBoard(BaseModel):
+    source_board_id: str
+    target_board_id: str
+
+
 class CreateColumn(BaseModel):
     name: str
     position: int | None = None  # append to end if None

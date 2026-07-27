@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,7 @@ from urllib.request import Request, urlopen
 
 import board_store as bs
 import card_store as cs
-from paths import home
+from paths import ensure_lock_path, home
 
 
 DEFAULT_CANVAS_API_URL = "http://localhost:8002/api"
@@ -36,7 +38,28 @@ def _read_syncs() -> dict[str, dict[str, Any]]:
 def _write_syncs(syncs: dict[str, dict[str, Any]]) -> None:
     path = sync_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(syncs, indent=2))
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    with open(temporary, "w") as stream:
+        stream.write(json.dumps(syncs, indent=2))
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _acquire_sync_lock():
+    lock_file = open(ensure_lock_path("canvas-sync"), "w")
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
+    return lock_file
+
+
+def _release_sync_lock(lock_file) -> None:
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    lock_file.close()
 
 
 def _configured_canvas_api_url() -> str:
@@ -55,35 +78,45 @@ def _validate_canvas_api_url(value: str) -> str:
 
 
 def get_sync_status(board_id: str) -> dict[str, Any]:
-    sync = _read_syncs().get(board_id, {})
-    return {
-        "enabled": bool(sync.get("enabled")),
-        "canvas_board_id": sync.get("canvas_board_id"),
-        "canvas_api_url": sync.get("canvas_api_url") or _configured_canvas_api_url(),
-        "last_synced_at": sync.get("last_synced_at"),
-        "last_error": sync.get("last_error"),
-    }
+    lock = _acquire_sync_lock()
+    try:
+        sync = _read_syncs().get(board_id, {})
+    finally:
+        _release_sync_lock(lock)
+    return _status_from_sync(sync)
 
 
 def enable_sync(board_id: str, canvas_api_url: str | None = None) -> dict[str, Any]:
     api_url = _validate_canvas_api_url(canvas_api_url or _configured_canvas_api_url())
-    syncs = _read_syncs()
-    current = syncs.get(board_id, {})
-    syncs[board_id] = {
-        **current,
-        "enabled": True,
-        "canvas_api_url": api_url,
-        "last_error": None,
-    }
-    _write_syncs(syncs)
+    board_lock = bs._with_lock(board_id)
+    sync_lock = _acquire_sync_lock()
+    try:
+        syncs = _read_syncs()
+        current = syncs.get(board_id, {})
+        syncs[board_id] = {
+            **current,
+            "enabled": True,
+            "canvas_api_url": api_url,
+            "last_error": None,
+        }
+        _write_syncs(syncs)
+    finally:
+        _release_sync_lock(sync_lock)
+        bs._release_lock(board_lock)
     return sync_board(board_id)
 
 
 def disable_sync(board_id: str) -> dict[str, Any]:
-    syncs = _read_syncs()
-    current = syncs.get(board_id, {})
-    syncs[board_id] = {**current, "enabled": False}
-    _write_syncs(syncs)
+    board_lock = bs._with_lock(board_id)
+    sync_lock = _acquire_sync_lock()
+    try:
+        syncs = _read_syncs()
+        current = syncs.get(board_id, {})
+        syncs[board_id] = {**current, "enabled": False}
+        _write_syncs(syncs)
+    finally:
+        _release_sync_lock(sync_lock)
+        bs._release_lock(board_lock)
     return get_sync_status(board_id)
 
 
@@ -94,45 +127,57 @@ def sync_if_enabled(board_id: str) -> dict[str, Any] | None:
 
 
 def sync_board(board_id: str) -> dict[str, Any]:
-    syncs = _read_syncs()
-    current = syncs.get(board_id, {})
-    if not current.get("enabled"):
-        return get_sync_status(board_id)
-
-    api_url = _validate_canvas_api_url(current.get("canvas_api_url") or _configured_canvas_api_url())
-    payload = build_graph_payload(board_id)
-    canvas_board_id = current.get("canvas_board_id")
+    board_lock = bs._with_lock(board_id)
+    sync_lock = _acquire_sync_lock()
     try:
-        if canvas_board_id:
-            response = _request_json("PUT", f"{api_url}/import/graph/{canvas_board_id}", payload)
-        else:
-            response = _request_json("POST", f"{api_url}/import/graph", payload)
-            canvas_board_id = response.get("id")
-        syncs[board_id] = {
-            **current,
-            "enabled": True,
-            "canvas_api_url": api_url,
-            "canvas_board_id": canvas_board_id,
-            "last_synced_at": _now(),
-            "last_error": None,
-        }
-    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
-        syncs[board_id] = {
-            **current,
-            "enabled": True,
-            "canvas_api_url": api_url,
-            "last_error": str(exc),
-        }
-    _write_syncs(syncs)
+        syncs = _read_syncs()
+        current = syncs.get(board_id, {})
+        if not current.get("enabled"):
+            return _status_from_sync(current)
+
+        api_url = _validate_canvas_api_url(current.get("canvas_api_url") or _configured_canvas_api_url())
+        payload = _build_graph_payload(bs.get_board(board_id), cs._read_cards(board_id))
+        canvas_board_id = current.get("canvas_board_id")
+        try:
+            if canvas_board_id:
+                response = _request_json("PUT", f"{api_url}/import/graph/{canvas_board_id}", payload)
+            else:
+                response = _request_json("POST", f"{api_url}/import/graph", payload)
+                canvas_board_id = response.get("id")
+            syncs[board_id] = {
+                **current,
+                "enabled": True,
+                "canvas_api_url": api_url,
+                "canvas_board_id": canvas_board_id,
+                "last_synced_at": _now(),
+                "last_error": None,
+            }
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            syncs[board_id] = {
+                **current,
+                "enabled": True,
+                "canvas_api_url": api_url,
+                "last_error": str(exc),
+            }
+        _write_syncs(syncs)
+    finally:
+        _release_sync_lock(sync_lock)
+        bs._release_lock(board_lock)
     return get_sync_status(board_id)
 
 
 def build_graph_payload(board_id: str) -> dict[str, Any]:
-    board = bs.get_board(board_id)
+    board_lock = bs._with_lock(board_id)
+    try:
+        return _build_graph_payload(bs.get_board(board_id), cs._read_cards(board_id))
+    finally:
+        bs._release_lock(board_lock)
+
+
+def _build_graph_payload(board, cards) -> dict[str, Any]:
     if not board:
         raise ValueError("Board not found")
 
-    cards = cs.list_cards(board_id)
     columns = sorted(board.columns, key=lambda col: col.position)
     column_index = {col.id: index for index, col in enumerate(columns)}
     column_names = {col.id: col.name for col in columns}
@@ -170,6 +215,16 @@ def build_graph_payload(board_id: str) -> dict[str, Any]:
         "description": board.description,
         "nodes": nodes,
         "edges": edges,
+    }
+
+
+def _status_from_sync(sync: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enabled": bool(sync.get("enabled")),
+        "canvas_board_id": sync.get("canvas_board_id"),
+        "canvas_api_url": sync.get("canvas_api_url") or _configured_canvas_api_url(),
+        "last_synced_at": sync.get("last_synced_at"),
+        "last_error": sync.get("last_error"),
     }
 
 
