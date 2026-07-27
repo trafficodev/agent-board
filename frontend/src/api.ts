@@ -22,11 +22,12 @@ export const deleteBoard = (id: string) => req<{ ok: boolean }>(`/boards/${id}`,
 
 // Cards
 export const listCards = (boardId: string) => req<Card[]>(`/boards/${boardId}/cards`);
-export const searchCards = (boardId: string, data: { query?: string; priority?: string; label?: string }) => {
+export const searchCards = (boardId: string, data: { query?: string; priority?: string; label?: string; sort?: string }) => {
   const params = new URLSearchParams();
   if (data.query) params.set("query", data.query);
   if (data.priority) params.set("priority", data.priority);
   if (data.label) params.set("label", data.label);
+  if (data.sort) params.set("sort", data.sort);
   const suffix = params.toString() ? `?${params}` : "";
   return req<Card[]>(`/boards/${boardId}/cards/search${suffix}`);
 };

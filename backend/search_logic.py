@@ -37,6 +37,13 @@ _TRACKED_LIST_FIELDS: dict[str, tuple[str, "re.Pattern | None"]] = {
     "worktree": ("worktrees", None),  # no reliable freeform-text signal; structured metadata only
 }
 
+_PRIORITY_RANK = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+}
+
 
 @dataclass(frozen=True)
 class SearchTerm:
@@ -49,6 +56,7 @@ class SearchTerm:
 def search_cards(
     cards: list[dict[str, Any]], columns: list[dict[str, Any]], query: str = "",
     priority: str | None = None, label: str | None = None, edges: list[dict[str, Any]] | None = None,
+    sort: str = "board",
 ) -> list[dict[str, Any]]:
     terms = parse_search_query(query)
     column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
@@ -67,14 +75,18 @@ def search_cards(
             direct_ids.add(card["id"])
 
     if not terms and not priority and not label:
-        return sorted(cards, key=_card_sort_key)
+        return sort_cards(cards, sort)
 
     visible_ids = set(direct_ids)
     for card_id in direct_ids:
         _add_ancestors(card_id, visible_ids, cards_by_id)
         _add_descendants(card_id, visible_ids, children_by_parent)
 
-    return sorted([card for card in cards if card["id"] in visible_ids], key=_card_sort_key)
+    return sort_cards([card for card in cards if card["id"] in visible_ids], sort)
+
+
+def sort_cards(cards: list[dict[str, Any]], sort: str = "board") -> list[dict[str, Any]]:
+    return sorted(cards, key=lambda card: _sort_key(card, sort))
 
 
 def ai_search_cards(
@@ -491,6 +503,33 @@ def _group_children(cards: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
 
 def _card_sort_key(card: dict[str, Any]) -> tuple[str, int]:
     return (card.get("column_id", ""), card.get("position", 0))
+
+
+def _sort_key(card: dict[str, Any], sort: str) -> tuple[Any, ...]:
+    board = _card_sort_key(card)
+    if sort == "updated_desc":
+        return (_reverse_timestamp(card.get("updated_at")), *board)
+    if sort == "created_desc":
+        return (_reverse_timestamp(card.get("created_at")), *board)
+    if sort == "priority_desc":
+        return (_PRIORITY_RANK.get(card.get("priority"), 99), *board)
+    if sort == "title_asc":
+        return (_normalize(card.get("title", "")), *board)
+    if sort == "sessions_desc":
+        return (-(len(card.get("session_history") or [])), *board)
+    return board
+
+
+def _reverse_timestamp(value: Any) -> float:
+    if not value:
+        return 0
+    try:
+        from datetime import datetime
+
+        normalized = str(value).replace("Z", "+00:00")
+        return -datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return 0
 
 
 def _normalize(value: Any) -> str:

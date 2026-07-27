@@ -95,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_cards.add_argument("--parent-id")
     list_cards.add_argument("--priority")
     list_cards.add_argument("--label")
+    list_cards.add_argument("--sort")
     list_cards.set_defaults(
         func=lambda args: client.list_cards(
             args.board_id,
@@ -102,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
             parent_id=args.parent_id,
             priority=args.priority,
             label=args.label,
+            sort=args.sort,
         )
     )
 
@@ -110,12 +112,30 @@ def build_parser() -> argparse.ArgumentParser:
     search_cards.add_argument("--query", default="")
     search_cards.add_argument("--priority")
     search_cards.add_argument("--label")
+    search_cards.add_argument("--sort")
     search_cards.set_defaults(
         func=lambda args: client.search_cards(
             args.board_id,
             query=args.query,
             priority=args.priority,
             label=args.label,
+            sort=args.sort,
+        )
+    )
+
+    ai_search_cards = sub.add_parser("ai_search_cards")
+    ai_search_cards.add_argument("board_id")
+    ai_search_cards.add_argument("query")
+    ai_search_cards.add_argument("--priority")
+    ai_search_cards.add_argument("--label")
+    ai_search_cards.add_argument("--max-results", type=int)
+    ai_search_cards.set_defaults(
+        func=lambda args: client.ai_search_cards(
+            args.board_id,
+            args.query,
+            priority=args.priority,
+            label=args.label,
+            max_results=args.max_results,
         )
     )
 

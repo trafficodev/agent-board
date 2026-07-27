@@ -251,19 +251,27 @@ def api_delete_column(board_id: str, column_id: str):
 # --- Cards ---
 
 @app.get("/api/boards/{board_id}/cards")
-def api_list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None, parent_id: str | None = None):
+def api_list_cards(
+    board_id: str,
+    priority: str | None = None,
+    label: str | None = None,
+    column_id: str | None = None,
+    parent_id: str | None = None,
+    sort: str = "board",
+):
     _board_or_404(board_id)
-    return cs.list_cards(board_id, priority=priority, label=label, column_id=column_id, parent_id=parent_id)
+    cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id, priority=priority, label=label, column_id=column_id, parent_id=parent_id)]
+    return search_logic.sort_cards(cards, sort)
 
 
 @app.get("/api/boards/{board_id}/cards/search")
-def api_search_cards(board_id: str, query: str = "", priority: str | None = None, label: str | None = None):
+def api_search_cards(board_id: str, query: str = "", priority: str | None = None, label: str | None = None, sort: str = "board"):
     board = _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
     edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
     try:
-        return search_logic.search_cards(cards, columns, query=query, priority=priority, label=label, edges=edges)
+        return search_logic.search_cards(cards, columns, query=query, priority=priority, label=label, edges=edges, sort=sort)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

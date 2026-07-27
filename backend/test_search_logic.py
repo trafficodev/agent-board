@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from search_logic import ai_search_cards, parse_search_query, search_cards
+from search_logic import ai_search_cards, parse_search_query, search_cards, sort_cards
 
 
 def edge(edge_id, from_card_id, to_card_id, **overrides):
@@ -217,6 +217,19 @@ class SearchLogicTest(unittest.TestCase):
 
         self.assertEqual(result["results"], [])
         self.assertEqual(result["error"], "empty_query")
+
+    def test_sort_cards_supports_public_sort_modes(self):
+        cards = [
+            card("low", title="Zulu", position=0, priority="low", updated_at="2026-01-01T00:00:00Z", session_history=[]),
+            card("critical", title="Alpha", position=1, priority="critical", updated_at="2026-01-03T00:00:00Z", session_history=[{"session_id": "1"}, {"session_id": "2"}]),
+            card("high", title="Beta", position=2, priority="high", updated_at="2026-01-02T00:00:00Z", session_history=[{"session_id": "1"}]),
+        ]
+
+        self.assertEqual([item["id"] for item in sort_cards(cards, "board")], ["low", "critical", "high"])
+        self.assertEqual([item["id"] for item in sort_cards(cards, "updated_desc")], ["critical", "high", "low"])
+        self.assertEqual([item["id"] for item in sort_cards(cards, "priority_desc")], ["critical", "high", "low"])
+        self.assertEqual([item["id"] for item in sort_cards(cards, "title_asc")], ["critical", "high", "low"])
+        self.assertEqual([item["id"] for item in sort_cards(cards, "sessions_desc")], ["critical", "high", "low"])
 
 
 if __name__ == "__main__":

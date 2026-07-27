@@ -273,9 +273,25 @@ def list_cards(board_id: str, **filters) -> list[dict]:
     return _req("GET", path)
 
 
-def search_cards(board_id: str, query: str = "", priority: str | None = None, label: str | None = None) -> list[dict]:
-    params = urllib.parse.urlencode({k: v for k, v in {"query": query, "priority": priority, "label": label}.items() if v})
+def search_cards(
+    board_id: str, query: str = "", priority: str | None = None, label: str | None = None, sort: str | None = None,
+) -> list[dict]:
+    params = urllib.parse.urlencode({k: v for k, v in {"query": query, "priority": priority, "label": label, "sort": sort}.items() if v})
     path = f"/api/boards/{board_id}/cards/search"
+    if params:
+        path += f"?{params}"
+    return _req("GET", path)
+
+
+def ai_search_cards(
+    board_id: str, query: str, priority: str | None = None, label: str | None = None, max_results: int | None = None,
+) -> dict:
+    params = urllib.parse.urlencode({
+        k: v
+        for k, v in {"query": query, "priority": priority, "label": label, "max_results": max_results}.items()
+        if v is not None and v != ""
+    })
+    path = f"/api/boards/{board_id}/cards/ai-search"
     if params:
         path += f"?{params}"
     return _req("GET", path)

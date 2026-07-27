@@ -98,6 +98,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
       query: effectiveSearch,
       priority: priorityFilter === "all" ? undefined : priorityFilter,
       label: labelFilter === "all" ? undefined : labelFilter,
+      sort: sortMode,
     }).then((result) => {
       if (cancelled) return;
       setBackendSearchCards(result);
@@ -111,7 +112,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     return () => {
       cancelled = true;
     };
-  }, [board.id, effectiveSearch, labelFilter, priorityFilter, useBackendSearch]);
+  }, [board.id, effectiveSearch, labelFilter, priorityFilter, sortMode, useBackendSearch]);
 
   const searchResult = useMemo(() => {
     if (aiCards) {

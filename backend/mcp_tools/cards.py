@@ -16,6 +16,7 @@ TOOLS = [
                 "parent_id": {"type": "string", "description": "Filter to children of this card. Use 'null' for top-level only."},
                 "priority": {"type": "string"},
                 "label": {"type": "string"},
+                "sort": {"type": "string", "enum": ["board", "updated_desc", "created_desc", "priority_desc", "title_asc", "sessions_desc"]},
             },
             "required": ["board_id"],
         },
@@ -30,8 +31,24 @@ TOOLS = [
                 "query": {"type": "string", "description": "Examples: file:frontend/src/App.tsx commit:abc1234 contains:renderSessionData has:file has:commit -label:bug"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "label": {"type": "string"},
+                "sort": {"type": "string", "enum": ["board", "updated_desc", "created_desc", "priority_desc", "title_asc", "sessions_desc"]},
             },
             "required": ["board_id"],
+        },
+    ),
+    Tool(
+        name="ai_search_cards",
+        description="Run ranked card search and return matching cards with reasoning and an error field",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "query": {"type": "string"},
+                "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                "label": {"type": "string"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 12},
+            },
+            "required": ["board_id", "query"],
         },
     ),
     Tool(
@@ -165,7 +182,7 @@ TOOLS = [
 def dispatch(name: str, arguments: dict):
     match name:
         case "list_cards":
-            filters = {k: arguments[k] for k in ("column_id", "parent_id", "priority", "label") if k in arguments}
+            filters = {k: arguments[k] for k in ("column_id", "parent_id", "priority", "label", "sort") if k in arguments}
             return client.list_cards(arguments["board_id"], **filters)
         case "search_cards":
             return client.search_cards(
@@ -173,6 +190,15 @@ def dispatch(name: str, arguments: dict):
                 query=arguments.get("query", ""),
                 priority=arguments.get("priority"),
                 label=arguments.get("label"),
+                sort=arguments.get("sort"),
+            )
+        case "ai_search_cards":
+            return client.ai_search_cards(
+                arguments["board_id"],
+                arguments["query"],
+                priority=arguments.get("priority"),
+                label=arguments.get("label"),
+                max_results=arguments.get("max_results"),
             )
         case "create_card":
             return client.create_card(
