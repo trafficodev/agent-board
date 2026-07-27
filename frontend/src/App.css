@@ -265,6 +265,8 @@ textarea {
 
 .canvas-sync-controls button,
 .board-filters button,
+.advanced-search-panel button,
+.search-status button,
 .inline-actions button,
 .new-card-actions button,
 .edit-actions button,
@@ -311,11 +313,62 @@ textarea {
 }
 
 .board-filters input {
-  width: min(260px, 34vw);
+  width: min(240px, 30vw);
 }
 
 .board-filters select {
   width: auto;
+}
+
+.board-filters button.active {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.advanced-search-panel {
+  align-items: center;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding: 10px;
+}
+
+.advanced-search-panel label {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.advanced-search-panel input[type="checkbox"] {
+  width: auto;
+}
+
+.advanced-search-panel input:not([type="checkbox"]) {
+  width: min(220px, 32vw);
+}
+
+.search-status {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.search-status.error {
+  color: var(--danger);
 }
 
 .search-count {

@@ -17,10 +17,12 @@ const card = (overrides) => ({
   priority: overrides.priority ?? "medium",
   labels: overrides.labels ?? [],
   session_history: overrides.session_history ?? [],
+  created_at: overrides.created_at ?? "2026-01-01T00:00:00Z",
+  updated_at: overrides.updated_at ?? "2026-01-01T00:00:00Z",
 });
 
-const search = (cards, query, priority = "all", label = "all") =>
-  filterCardsForBoard(cards, columns, { query, priority, label }).cards.map((item) => item.id);
+const search = (cards, query, priority = "all", label = "all", sort = "board") =>
+  filterCardsForBoard(cards, columns, { query, priority, label, sort }).cards.map((item) => item.id);
 
 describe("board search", () => {
   it("parses phrases, fields, and negation", () => {
@@ -73,7 +75,28 @@ describe("board search", () => {
   it("marks contains queries as backend searches", () => {
     assert.equal(requiresBackendSearch("contains:renderSessionData"), true);
     assert.equal(requiresBackendSearch("content:renderSessionData"), true);
-    assert.equal(requiresBackendSearch("file:App.tsx"), false);
+    assert.equal(requiresBackendSearch("metadata:assistant-turn-1"), true);
+    assert.equal(requiresBackendSearch("file:App.tsx"), true);
+    assert.equal(requiresBackendSearch("has:file"), true);
+    assert.equal(requiresBackendSearch("has:commit"), true);
+    assert.equal(requiresBackendSearch("has:worktree"), true);
+    assert.equal(requiresBackendSearch("has:edge"), true);
+    assert.equal(requiresBackendSearch("title:/urgent/i"), true);
+    assert.equal(requiresBackendSearch("title:urgent"), false);
+  });
+
+  it("sorts by board order, update time, priority, title, and sessions", () => {
+    const cards = [
+      card({ id: "low", title: "Zulu", position: 0, priority: "low", updated_at: "2026-01-01T00:00:00Z", session_history: [] }),
+      card({ id: "critical", title: "Alpha", position: 1, priority: "critical", updated_at: "2026-01-03T00:00:00Z", session_history: [{ session_id: "1" }, { session_id: "2" }] }),
+      card({ id: "high", title: "Beta", position: 2, priority: "high", updated_at: "2026-01-02T00:00:00Z", session_history: [{ session_id: "1" }] }),
+    ];
+
+    assert.deepEqual(search(cards, ""), ["low", "critical", "high"]);
+    assert.deepEqual(search(cards, "", "all", "all", "updated_desc"), ["critical", "high", "low"]);
+    assert.deepEqual(search(cards, "", "all", "all", "priority_desc"), ["critical", "high", "low"]);
+    assert.deepEqual(search(cards, "", "all", "all", "title_asc"), ["critical", "high", "low"]);
+    assert.deepEqual(search(cards, "", "all", "all", "sessions_desc"), ["critical", "high", "low"]);
   });
 
   it("excludes negative terms", () => {

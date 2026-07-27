@@ -268,6 +268,32 @@ def api_search_cards(board_id: str, query: str = "", priority: str | None = None
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.get("/api/boards/{board_id}/cards/ai-search")
+def api_ai_search_cards(
+    board_id: str,
+    query: str = "",
+    priority: str | None = None,
+    label: str | None = None,
+    max_results: int = Query(12, ge=1, le=50),
+):
+    board = _board_or_404(board_id)
+    cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
+    columns = [column.model_dump(mode="json") for column in board.columns]
+    edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
+    try:
+        return search_logic.ai_search_cards(
+            cards,
+            columns,
+            query=query,
+            priority=priority,
+            label=label,
+            edges=edges,
+            max_results=max_results,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/boards/{board_id}/cards", status_code=201)
 def api_create_card(board_id: str, body: CreateCard):
     _board_or_404(board_id)

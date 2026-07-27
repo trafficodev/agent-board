@@ -77,6 +77,38 @@ def search_cards(
     return sorted([card for card in cards if card["id"] in visible_ids], key=_card_sort_key)
 
 
+def ai_search_cards(
+    cards: list[dict[str, Any]], columns: list[dict[str, Any]], query: str,
+    priority: str | None = None, label: str | None = None, edges: list[dict[str, Any]] | None = None,
+    max_results: int = 12,
+) -> dict[str, Any]:
+    terms = parse_search_query(query)
+    if not terms:
+        return {"results": [], "reasoning": "", "error": "empty_query"}
+
+    column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
+    cards_by_id = {card["id"]: card for card in cards}
+    edges_by_card = _group_edges_by_card(edges or [])
+    ranked: list[tuple[int, dict[str, Any]]] = []
+
+    for card in cards:
+        if priority and card.get("priority") != priority:
+            continue
+        if label and label not in card.get("labels", []):
+            continue
+        score = _ai_relevance_score(card, terms, column_names_by_id, edges_by_card, cards_by_id)
+        if score > 0:
+            ranked.append((score, card))
+
+    ranked.sort(key=lambda item: (-item[0], _card_sort_key(item[1])))
+    results = [card for _score, card in ranked[:max_results]]
+    return {
+        "results": results,
+        "reasoning": _ai_reasoning(query, len(ranked), len(results)),
+        "error": None,
+    }
+
+
 _REGEX_VALUE_RE = re.compile(r"^/(.+)/([a-zA-Z]*)$")
 
 
@@ -175,6 +207,59 @@ def _matches_term(
     if term.regex:
         return any(term.regex.search(str(value)) for value in values)
     return any(term.value in _normalize(value) for value in values)
+
+
+def _ai_relevance_score(
+    card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> int:
+    score = 0
+    for term in terms:
+        if term.negative:
+            if _matches_term(card, term, column_names_by_id, {}, edges_by_card, cards_by_id):
+                return 0
+            continue
+        score += _weighted_term_score(card, term, column_names_by_id, edges_by_card, cards_by_id)
+    return score
+
+
+def _weighted_term_score(
+    card: dict[str, Any], term: SearchTerm, column_names_by_id: dict[str, str],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> int:
+    if term.field:
+        return 8 if _matches_term(card, term, column_names_by_id, {}, edges_by_card, cards_by_id) else 0
+
+    weights = {
+        "title": 12,
+        "label": 8,
+        "body": 5,
+        "metadata": 4,
+        "session": 4,
+        "edge": 4,
+        "priority": 3,
+        "column": 3,
+        "external_id": 2,
+        "id": 1,
+    }
+    total = 0
+    for field, weight in weights.items():
+        values = _search_values(card, column_names_by_id, field, edges_by_card, cards_by_id)
+        if term.regex:
+            matched = any(term.regex.search(str(value)) for value in values)
+        else:
+            matched = any(term.value in _normalize(value) for value in values)
+        if matched:
+            total += weight
+    return total
+
+
+def _ai_reasoning(query: str, matched: int, returned: int) -> str:
+    if matched == 0:
+        return f"No cards matched \"{query.strip()}\"."
+    if matched == returned:
+        return f"Ranked {returned} cards by title, labels, body, metadata, sessions, and edges."
+    return f"Ranked {matched} matching cards and returned the top {returned}."
 
 
 def _search_values(

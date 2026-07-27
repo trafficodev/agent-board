@@ -1,4 +1,4 @@
-import type { Board, CanvasSyncStatus, Card, Column, Event } from "./types";
+import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, Column, Event } from "./types";
 
 const BASE = "/api";
 
@@ -29,6 +29,13 @@ export const searchCards = (boardId: string, data: { query?: string; priority?: 
   if (data.label) params.set("label", data.label);
   const suffix = params.toString() ? `?${params}` : "";
   return req<Card[]>(`/boards/${boardId}/cards/search${suffix}`);
+};
+export const aiSearchCards = (boardId: string, data: { query: string; priority?: string; label?: string; signal?: AbortSignal }) => {
+  const params = new URLSearchParams();
+  params.set("query", data.query);
+  if (data.priority) params.set("priority", data.priority);
+  if (data.label) params.set("label", data.label);
+  return req<CardAiSearchResult>(`/boards/${boardId}/cards/ai-search?${params}`, { signal: data.signal });
 };
 export const createCard = (boardId: string, data: { title: string; body?: string; column_id: string; parent_id?: string | null; priority?: string; labels?: string[] }) =>
   req<Card>(`/boards/${boardId}/cards`, { method: "POST", body: JSON.stringify(data) });

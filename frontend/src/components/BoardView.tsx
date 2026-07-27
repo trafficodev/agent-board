@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Board, CanvasSyncStatus, Card, Column, Event } from "../types";
 import * as api from "../api";
-import { getColumnRootCards, groupSameColumnChildren } from "../boardLogic.js";
-import { filterCardsForBoard, requiresBackendSearch } from "../boardSearch.js";
+import { groupSameColumnChildren, isColumnRoot } from "../boardLogic.js";
+import { BOARD_SORTS, filterCardsForBoard, requiresBackendSearch, sortCards } from "../boardSearch.js";
 import CardComponent from "./CardComponent";
 
 interface Props {
@@ -14,6 +14,20 @@ interface Props {
 
 const PRIORITIES: Card["priority"][] = ["critical", "high", "medium", "low"];
 const DEFAULT_NEW_CARD = { title: "", body: "", priority: "medium" as Card["priority"], labels: "" };
+const SEARCH_FIELDS = ["title", "body", "label", "priority", "column", "metadata", "session", "edge", "file", "commit", "worktree", "contains"] as const;
+const DEFAULT_ADVANCED_FILTERS = {
+  field: "title",
+  value: "",
+  hasFiles: false,
+  hasCommits: false,
+  hasSessions: false,
+  hasEdges: false,
+  hideLowPriority: false,
+};
+
+function quoteSearchValue(value: string) {
+  return value.replaceAll("\"", " ");
+}
 
 export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: Props) {
   const [dragCardId, setDragCardId] = useState<string | null>(null);
@@ -24,8 +38,16 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   const [search, setSearch] = useState("");
   const [backendSearchCards, setBackendSearchCards] = useState<Card[] | null>(null);
   const [searchError, setSearchError] = useState("");
+  const [sortMode, setSortMode] = useState("board");
   const [priorityFilter, setPriorityFilter] = useState<"all" | Card["priority"]>("all");
   const [labelFilter, setLabelFilter] = useState("all");
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [advancedFilters, setAdvancedFilters] = useState(DEFAULT_ADVANCED_FILTERS);
+  const [aiCards, setAiCards] = useState<Card[] | null>(null);
+  const [aiReasoning, setAiReasoning] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const aiAbortRef = useRef<AbortController | null>(null);
   const [expandedCards, setExpandedCards] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
   const [events, setEvents] = useState<Event[]>([]);
@@ -51,7 +73,18 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     [cards],
   );
 
-  const useBackendSearch = requiresBackendSearch(search);
+  const effectiveSearch = useMemo(() => {
+    const terms = [search.trim()];
+    if (advancedFilters.value.trim()) terms.push(`${advancedFilters.field}:"${quoteSearchValue(advancedFilters.value.trim())}"`);
+    if (advancedFilters.hasFiles) terms.push("has:file");
+    if (advancedFilters.hasCommits) terms.push("has:commit");
+    if (advancedFilters.hasSessions) terms.push("has:session");
+    if (advancedFilters.hasEdges) terms.push("has:edge");
+    if (advancedFilters.hideLowPriority) terms.push("-priority:low");
+    return terms.filter(Boolean).join(" ");
+  }, [advancedFilters, search]);
+
+  const useBackendSearch = requiresBackendSearch(effectiveSearch);
 
   useEffect(() => {
     if (!useBackendSearch) {
@@ -62,7 +95,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
 
     let cancelled = false;
     void api.searchCards(board.id, {
-      query: search,
+      query: effectiveSearch,
       priority: priorityFilter === "all" ? undefined : priorityFilter,
       label: labelFilter === "all" ? undefined : labelFilter,
     }).then((result) => {
@@ -78,15 +111,19 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     return () => {
       cancelled = true;
     };
-  }, [board.id, labelFilter, priorityFilter, search, useBackendSearch]);
+  }, [board.id, effectiveSearch, labelFilter, priorityFilter, useBackendSearch]);
 
   const searchResult = useMemo(() => {
+    if (aiCards) {
+      const ids = new Set(aiCards.map((card) => card.id));
+      return { cards: sortCards(aiCards, sortMode), directMatchIds: ids };
+    }
     if (useBackendSearch) {
-      const resultCards = backendSearchCards ?? [];
+      const resultCards = sortCards(backendSearchCards ?? [], sortMode);
       return { cards: resultCards, directMatchIds: new Set(resultCards.map((card) => card.id)) };
     }
-    return filterCardsForBoard(cards, board.columns, { query: search, priority: priorityFilter, label: labelFilter });
-  }, [backendSearchCards, board.columns, cards, labelFilter, priorityFilter, search, useBackendSearch]);
+    return filterCardsForBoard(cards, board.columns, { query: effectiveSearch, priority: priorityFilter, label: labelFilter, sort: sortMode });
+  }, [aiCards, backendSearchCards, board.columns, cards, effectiveSearch, labelFilter, priorityFilter, sortMode, useBackendSearch]);
 
   const subTasksByParent = useMemo(() => {
     return groupSameColumnChildren(searchResult.cards) as Map<string, Card[]>;
@@ -113,9 +150,15 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   );
 
   const cardsForColumn = (columnId: string) =>
-    getColumnRootCards(searchResult.cards, columnId) as Card[];
+    sortCards(
+      searchResult.cards
+        .filter((card) => card.column_id === columnId)
+        .filter((card) => isColumnRoot(card, new Map(searchResult.cards.map((item) => [item.id, item])))),
+      sortMode,
+    ) as Card[];
 
-  const hasActiveCardFilter = search.trim() !== "" || priorityFilter !== "all" || labelFilter !== "all";
+  const hasAdvancedFilter = Object.entries(advancedFilters).some(([key, value]) => DEFAULT_ADVANCED_FILTERS[key as keyof typeof DEFAULT_ADVANCED_FILTERS] !== value);
+  const hasActiveCardFilter = effectiveSearch.trim() !== "" || priorityFilter !== "all" || labelFilter !== "all" || aiCards !== null;
 
   const resetNewCard = () => setNewCard(DEFAULT_NEW_CARD);
 
@@ -218,6 +261,49 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     }
   };
 
+  const clearAiSearch = () => {
+    aiAbortRef.current?.abort();
+    aiAbortRef.current = null;
+    setAiCards(null);
+    setAiReasoning("");
+    setAiError("");
+    setAiLoading(false);
+  };
+
+  const updateSearchState = (update: () => void) => {
+    update();
+    clearAiSearch();
+  };
+
+  const runAiSearch = async () => {
+    const query = effectiveSearch.trim();
+    if (!query) return;
+    aiAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    aiAbortRef.current = ctrl;
+    setAiLoading(true);
+    setAiError("");
+    try {
+      const result = await api.aiSearchCards(board.id, {
+        query,
+        priority: priorityFilter === "all" ? undefined : priorityFilter,
+        label: labelFilter === "all" ? undefined : labelFilter,
+        signal: ctrl.signal,
+      });
+      if (ctrl.signal.aborted) return;
+      setAiCards(result.results);
+      setAiReasoning(result.reasoning);
+      setAiError(result.error ?? "");
+    } catch (error) {
+      if (ctrl.signal.aborted) return;
+      setAiCards([]);
+      setAiReasoning("");
+      setAiError(error instanceof Error ? error.message : "AI search failed");
+    } finally {
+      if (!ctrl.signal.aborted) setAiLoading(false);
+    }
+  };
+
   return (
     <div className="board-view">
       <div className="board-header">
@@ -268,12 +354,35 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
             <span>{stats.done} done</span>
           </div>
           <div className="board-filters">
-            <input placeholder="Search cards" value={search} onChange={(e) => setSearch(e.target.value)} />
-            <select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value as "all" | Card["priority"])}>
+            <input
+              placeholder="Search cards"
+              value={search}
+              onChange={(e) => {
+                updateSearchState(() => setSearch(e.target.value));
+              }}
+            />
+            <button
+              className={aiCards ? "active" : ""}
+              onClick={runAiSearch}
+              disabled={aiLoading || !effectiveSearch.trim()}
+              title="Run AI search"
+            >
+              {aiLoading ? "Searching..." : "AI"}
+            </button>
+            <button
+              className={showAdvancedSearch || hasAdvancedFilter ? "active" : ""}
+              onClick={() => setShowAdvancedSearch((value) => !value)}
+            >
+              Advanced
+            </button>
+            <select value={sortMode} onChange={(e) => setSortMode(e.target.value)}>
+              {BOARD_SORTS.map((sort) => <option key={sort.value} value={sort.value}>{sort.label}</option>)}
+            </select>
+            <select value={priorityFilter} onChange={(e) => updateSearchState(() => setPriorityFilter(e.target.value as "all" | Card["priority"]))}>
               <option value="all">All priorities</option>
               {PRIORITIES.map((priority) => <option key={priority} value={priority}>{priority}</option>)}
             </select>
-            <select value={labelFilter} onChange={(e) => setLabelFilter(e.target.value)}>
+            <select value={labelFilter} onChange={(e) => updateSearchState(() => setLabelFilter(e.target.value))}>
               <option value="all">All labels</option>
               {labels.map((label) => <option key={label} value={label}>{label}</option>)}
             </select>
@@ -281,15 +390,55 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
             <button onClick={() => setExpandedCards((value) => !value)}>{expandedCards ? "Compact" : "Expand"}</button>
           </div>
         </div>
-        {searchError && <div className="canvas-sync-status error">{searchError}</div>}
+        {showAdvancedSearch && (
+          <div className="advanced-search-panel">
+            <label>
+              Search in
+              <select
+                value={advancedFilters.field}
+                onChange={(e) => updateSearchState(() => setAdvancedFilters((value) => ({ ...value, field: e.target.value })))}
+              >
+                {SEARCH_FIELDS.map((field) => <option key={field} value={field}>{field.replaceAll("_", " ")}</option>)}
+              </select>
+            </label>
+            <input
+              placeholder="Field value"
+              value={advancedFilters.value}
+              onChange={(e) => {
+                updateSearchState(() => setAdvancedFilters((value) => ({ ...value, value: e.target.value })));
+              }}
+            />
+            <label><input type="checkbox" checked={advancedFilters.hasFiles} onChange={(e) => updateSearchState(() => setAdvancedFilters((value) => ({ ...value, hasFiles: e.target.checked })))} /> Files</label>
+            <label><input type="checkbox" checked={advancedFilters.hasCommits} onChange={(e) => updateSearchState(() => setAdvancedFilters((value) => ({ ...value, hasCommits: e.target.checked })))} /> Commits</label>
+            <label><input type="checkbox" checked={advancedFilters.hasSessions} onChange={(e) => updateSearchState(() => setAdvancedFilters((value) => ({ ...value, hasSessions: e.target.checked })))} /> Sessions</label>
+            <label><input type="checkbox" checked={advancedFilters.hasEdges} onChange={(e) => updateSearchState(() => setAdvancedFilters((value) => ({ ...value, hasEdges: e.target.checked })))} /> Edges</label>
+            <label><input type="checkbox" checked={advancedFilters.hideLowPriority} onChange={(e) => updateSearchState(() => setAdvancedFilters((value) => ({ ...value, hideLowPriority: e.target.checked })))} /> Hide low</label>
+            {hasAdvancedFilter && (
+              <button
+                onClick={() => {
+                  setAdvancedFilters(DEFAULT_ADVANCED_FILTERS);
+                  clearAiSearch();
+                }}
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        )}
+        {(searchError || aiError || aiReasoning || aiCards) && (
+          <div className={`search-status ${searchError || aiError ? "error" : ""}`}>
+            {searchError || aiError || aiReasoning || (aiCards ? `${aiCards.length} AI matches` : "")}
+            {aiCards && <button onClick={clearAiSearch}>Clear AI</button>}
+          </div>
+        )}
 
         <div className="type-bar">
-          <button className={labelFilter === "all" ? "active" : ""} onClick={() => setLabelFilter("all")}>All types</button>
+          <button className={labelFilter === "all" ? "active" : ""} onClick={() => updateSearchState(() => setLabelFilter("all"))}>All types</button>
           {typeStats.map((item) => (
             <button
               key={item.label}
               className={labelFilter === item.label ? "active" : ""}
-              onClick={() => setLabelFilter(item.label)}
+              onClick={() => updateSearchState(() => setLabelFilter(item.label))}
             >
               {item.label.replaceAll("_", " ")} <span>{item.count}</span>
             </button>

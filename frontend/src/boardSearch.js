@@ -11,6 +11,23 @@ const FIELD_ALIASES = new Map([
   ["worktree_path", "worktree"],
   ["worktree_paths", "worktree"],
   ["content", "contains"],
+  ["external", "external_id"],
+]);
+
+export const BOARD_SORTS = [
+  { value: "board", label: "Board order" },
+  { value: "updated_desc", label: "Recently updated" },
+  { value: "created_desc", label: "Newest created" },
+  { value: "priority_desc", label: "Priority" },
+  { value: "title_asc", label: "Title" },
+  { value: "sessions_desc", label: "Most sessions" },
+];
+
+const PRIORITY_RANK = new Map([
+  ["critical", 0],
+  ["high", 1],
+  ["medium", 2],
+  ["low", 3],
 ]);
 
 // Card fields backed by a `<key>: [...]` line in the body, plus an optional
@@ -37,7 +54,7 @@ export function filterCardsForBoard(cards, columns, filters) {
 
   if (queryTerms.length === 0 && filters.priority === "all" && filters.label === "all") {
     return {
-      cards: [...cards].sort(compareCards),
+      cards: sortCards(cards, filters.sort),
       directMatchIds: directMatches,
     };
   }
@@ -49,9 +66,13 @@ export function filterCardsForBoard(cards, columns, filters) {
   }
 
   return {
-    cards: cards.filter((card) => visibleIds.has(card.id)).sort(compareCards),
+    cards: sortCards(cards.filter((card) => visibleIds.has(card.id)), filters.sort),
     directMatchIds: directMatches,
   };
+}
+
+export function sortCards(cards, sort = "board") {
+  return [...cards].sort((a, b) => compareCards(a, b, sort));
 }
 
 export function parseSearchQuery(query) {
@@ -120,7 +141,15 @@ function matchesTerm(card, term, columnNamesById) {
 }
 
 export function requiresBackendSearch(query) {
-  return parseSearchQuery(query).some((term) => term.field === "contains");
+  return parseSearchQuery(query).some((term) => {
+    if (term.field === "contains" || term.field === "edge" || term.field === "edge_type") return true;
+    if (term.field === "metadata" || TRACKED_LIST_FIELDS.has(term.field)) return true;
+    if (term.field === "has") {
+      const tracked = HAS_ALIASES.get(term.value);
+      return Boolean(tracked || term.value === "edge" || term.value === "edges");
+    }
+    return /^\/.+\/[a-z]*$/i.test(term.value);
+  });
 }
 
 function searchValues(card, columnNamesById, field) {
@@ -134,6 +163,7 @@ function searchValues(card, columnNamesById, field) {
   ]);
 
   const scoped = {
+    external_id: [card.external_id ?? ""],
     title: [card.title],
     body: [card.body],
     label: card.labels,
@@ -211,9 +241,32 @@ function groupChildren(cards) {
   return childrenByParent;
 }
 
-function compareCards(a, b) {
+function compareCards(a, b, sort = "board") {
+  const tie = compareBoardOrder(a, b);
+  if (sort === "updated_desc") return compareDateDesc(a.updated_at, b.updated_at) || tie;
+  if (sort === "created_desc") return compareDateDesc(a.created_at, b.created_at) || tie;
+  if (sort === "priority_desc") return comparePriority(a, b) || tie;
+  if (sort === "title_asc") return normalize(a.title).localeCompare(normalize(b.title)) || tie;
+  if (sort === "sessions_desc") return (b.session_history?.length ?? 0) - (a.session_history?.length ?? 0) || tie;
+  return tie;
+}
+
+function compareBoardOrder(a, b) {
   if (a.column_id !== b.column_id) return a.column_id.localeCompare(b.column_id);
   return a.position - b.position;
+}
+
+function compareDateDesc(a, b) {
+  const left = Date.parse(a ?? "");
+  const right = Date.parse(b ?? "");
+  if (Number.isNaN(left) && Number.isNaN(right)) return 0;
+  if (Number.isNaN(left)) return 1;
+  if (Number.isNaN(right)) return -1;
+  return right - left;
+}
+
+function comparePriority(a, b) {
+  return (PRIORITY_RANK.get(a.priority) ?? 99) - (PRIORITY_RANK.get(b.priority) ?? 99);
 }
 
 function normalize(value) {

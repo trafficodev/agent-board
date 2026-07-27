@@ -16,6 +16,7 @@ export interface SessionEntry {
 export interface Card {
   id: string;
   board_id: string;
+  external_id: string;
   title: string;
   body: string;
   column_id: string;
@@ -23,9 +24,16 @@ export interface Card {
   position: number;
   priority: "critical" | "high" | "medium" | "low";
   labels: string[];
+  metadata: Record<string, unknown>;
   session_history: SessionEntry[];
   created_at: string;
   updated_at: string;
+}
+
+export interface CardAiSearchResult {
+  results: Card[];
+  reasoning: string;
+  error: string | null;
 }
 
 export interface Board {

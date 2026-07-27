@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from search_logic import parse_search_query, search_cards
+from search_logic import ai_search_cards, parse_search_query, search_cards
 
 
 def edge(edge_id, from_card_id, to_card_id, **overrides):
@@ -197,6 +197,26 @@ class SearchLogicTest(unittest.TestCase):
             ["blocked"],
         )
         self.assertEqual(search_cards(cards, COLUMNS, "has:edge"), [])
+
+    def test_ai_search_ranks_matches_and_returns_reasoning(self):
+        cards = [
+            card("body", body="Fix the login search panel"),
+            card("title", title="Login search ranking"),
+            card("label", labels=["login"]),
+            card("miss", title="Unrelated"),
+        ]
+
+        result = ai_search_cards(cards, COLUMNS, "login")
+
+        self.assertIsNone(result["error"])
+        self.assertEqual([item["id"] for item in result["results"]], ["title", "label", "body"])
+        self.assertIn("Ranked", result["reasoning"])
+
+    def test_ai_search_rejects_empty_query(self):
+        result = ai_search_cards([card("a")], COLUMNS, "  ")
+
+        self.assertEqual(result["results"], [])
+        self.assertEqual(result["error"], "empty_query")
 
 
 if __name__ == "__main__":
