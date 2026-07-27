@@ -220,6 +220,10 @@ def ensure_project_board(
     })
 
 
+def link_project_remote(board_id: str, remote_url: str) -> dict:
+    return _req("POST", f"/api/boards/{board_id}/project-remotes", {"remote_url": remote_url})
+
+
 def delete_board(board_id: str) -> dict:
     return _req("DELETE", f"/api/boards/{board_id}")
 

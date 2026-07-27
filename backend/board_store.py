@@ -13,6 +13,10 @@ _SCP_LIKE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
 _URL_LIKE_RE = re.compile(r"^\w+://(?:[^@/]+@)?([^/]+)/(.+)$")
 
 
+class ProjectRemoteConflictError(ValueError):
+    pass
+
+
 def _read_json(path: Path) -> dict | None:
     if not path.exists():
         return None
@@ -106,9 +110,22 @@ def get_board_by_remote_url(remote_url: str) -> Board | None:
     if not normalized:
         return None
     for board in list_boards():
-        if board.remote_url and normalize_remote_url(board.remote_url) == normalized:
+        project_remotes = [board.remote_url, *board.remote_aliases]
+        if any(normalize_remote_url(remote) == normalized for remote in project_remotes if remote):
             return board
     return None
+
+
+def _acquire_remote_lock(normalized_remote_url: str):
+    lock_path = ensure_lock_path(hashlib.sha256(normalized_remote_url.encode()).hexdigest()[:24])
+    lock_file = open(lock_path, "w")
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
+    return lock_file
+
+
+def _release_remote_lock(lock_file) -> None:
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    lock_file.close()
 
 
 def ensure_project_board(
@@ -119,10 +136,8 @@ def ensure_project_board(
     if not normalized:
         raise ValueError("remote_url is required")
 
-    lock_path = ensure_lock_path(hashlib.sha256(normalized.encode()).hexdigest()[:24])
-    lock_file = open(lock_path, "w")
+    lock_file = _acquire_remote_lock(normalized)
     try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
         existing = get_board_by_remote_url(normalized)
         if existing:
             return existing
@@ -134,16 +149,48 @@ def ensure_project_board(
             remote_url=normalized,
         )
     finally:
-        fcntl.flock(lock_file, fcntl.LOCK_UN)
-        lock_file.close()
+        _release_remote_lock(lock_file)
 
 
-def update_board(board_id: str, **kwargs) -> Board | None:
+def link_project_remote(board_id: str, remote_url: str) -> Board | None:
+    normalized = normalize_remote_url(remote_url)
+    if not normalized:
+        raise ValueError("remote_url is required")
+
+    remote_lock = _acquire_remote_lock(normalized)
+    try:
+        owner = get_board_by_remote_url(normalized)
+        if owner:
+            if owner.id != board_id:
+                raise ProjectRemoteConflictError("remote_url is already linked to another board")
+            return owner
+
+        board_lock = _with_lock(board_id)
+        try:
+            board = get_board(board_id)
+            if not board:
+                return None
+            board.remote_aliases.append(normalized)
+            board.updated_at = _now()
+            _save_board(board)
+            return board
+        finally:
+            _release_lock(board_lock)
+    finally:
+        _release_remote_lock(remote_lock)
+
+
+def _update_board_under_lock(board_id: str, kwargs: dict) -> Board | None:
     lock = _with_lock(board_id)
     try:
         board = get_board(board_id)
         if not board:
             return None
+        if "remote_url" in kwargs:
+            board.remote_aliases = [
+                alias for alias in board.remote_aliases
+                if normalize_remote_url(alias) != kwargs["remote_url"]
+            ]
         for k, v in kwargs.items():
             if v is not None:
                 setattr(board, k, v)
@@ -152,6 +199,25 @@ def update_board(board_id: str, **kwargs) -> Board | None:
         return board
     finally:
         _release_lock(lock)
+
+
+def update_board(board_id: str, **kwargs) -> Board | None:
+    if kwargs.get("remote_url") is None:
+        return _update_board_under_lock(board_id, kwargs)
+
+    normalized = normalize_remote_url(kwargs["remote_url"])
+    if not normalized:
+        raise ValueError("remote_url is required")
+    kwargs["remote_url"] = normalized
+
+    remote_lock = _acquire_remote_lock(normalized)
+    try:
+        owner = get_board_by_remote_url(normalized)
+        if owner and owner.id != board_id:
+            raise ProjectRemoteConflictError("remote_url is already linked to another board")
+        return _update_board_under_lock(board_id, kwargs)
+    finally:
+        _release_remote_lock(remote_lock)
 
 
 def delete_board(board_id: str) -> bool:

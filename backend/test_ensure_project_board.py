@@ -1,10 +1,15 @@
+import json
 import os
 import tempfile
+import threading
 import unittest
+from pathlib import Path
 
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-test-")
 
 import board_store
+from fastapi.testclient import TestClient
+from main import app
 
 
 class EnsureProjectBoardTest(unittest.TestCase):
@@ -51,6 +56,79 @@ class EnsureProjectBoardTest(unittest.TestCase):
 
         self.assertNotEqual(a.id, b.id)
         self.assertEqual(len(board_store.list_boards()), 2)
+
+    def test_linked_remote_resolves_to_existing_board_and_persists(self):
+        private = board_store.ensure_project_board("git@gitlab.com:acme/widgets-private.git")
+
+        linked = board_store.link_project_remote(private.id, "https://github.com/acme/widgets.git")
+        ensured = board_store.ensure_project_board("git@github.com:acme/widgets.git")
+        reloaded = board_store.get_board(private.id)
+
+        self.assertEqual(linked.id, private.id)
+        self.assertEqual(ensured.id, private.id)
+        self.assertEqual(reloaded.remote_aliases, ["github.com/acme/widgets"])
+        self.assertEqual(len(board_store.list_boards()), 1)
+
+    def test_link_is_idempotent_and_rejects_a_remote_owned_by_another_board(self):
+        private = board_store.ensure_project_board("git@gitlab.com:acme/widgets-private.git")
+        public = board_store.ensure_project_board("git@github.com:acme/widgets.git")
+
+        same = board_store.link_project_remote(private.id, private.remote_url)
+        self.assertEqual(same.id, private.id)
+        with self.assertRaisesRegex(ValueError, "already linked to another board"):
+            board_store.link_project_remote(private.id, public.remote_url)
+
+    def test_concurrent_different_alias_links_do_not_lose_updates(self):
+        board = board_store.ensure_project_board("git@gitlab.com:acme/widgets-private.git")
+        barrier = threading.Barrier(3)
+        errors = []
+
+        def link(remote_url):
+            try:
+                barrier.wait()
+                board_store.link_project_remote(board.id, remote_url)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=link, args=("git@github.com:acme/widgets.git",)),
+            threading.Thread(target=link, args=("git@gitlab.com:acme/widgets-public.git",)),
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            set(board_store.get_board(board.id).remote_aliases),
+            {"github.com/acme/widgets", "gitlab.com/acme/widgets-public"},
+        )
+
+    def test_board_json_without_remote_aliases_still_loads(self):
+        board = board_store.ensure_project_board("git@github.com:acme/widgets.git")
+        path = Path(os.environ["AGENT_BOARD_HOME"]) / "boards" / f"{board.id}.json"
+        data = json.loads(path.read_text())
+        del data["remote_aliases"]
+        path.write_text(json.dumps(data))
+
+        reloaded = board_store.get_board(board.id)
+
+        self.assertEqual(reloaded.remote_aliases, [])
+        self.assertEqual(board_store.get_board_by_remote_url(board.remote_url).id, board.id)
+
+    def test_link_project_remote_api_reports_conflict(self):
+        private = board_store.ensure_project_board("git@gitlab.com:acme/widgets-private.git")
+        public = board_store.ensure_project_board("git@github.com:acme/widgets.git")
+
+        response = TestClient(app).post(
+            f"/api/boards/{private.id}/project-remotes",
+            json={"remote_url": public.remote_url},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "remote_url is already linked to another board")
 
 
 if __name__ == "__main__":

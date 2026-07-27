@@ -63,6 +63,21 @@ TOOLS = [
         },
     ),
     Tool(
+        name="link_project_remote",
+        description=(
+            "Link another repository remote URL to an existing project board. "
+            "The remote is normalized and may belong to only one board."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "board_id": {"type": "string"},
+                "remote_url": {"type": "string", "description": "e.g. output of `git remote get-url origin`"},
+            },
+            "required": ["board_id", "remote_url"],
+        },
+    ),
+    Tool(
         name="delete_board",
         description="Delete a board",
         inputSchema={"type": "object", "properties": {"board_id": {"type": "string"}}, "required": ["board_id"]},
@@ -149,6 +164,8 @@ def dispatch(name: str, arguments: dict):
                 description=arguments.get("description", ""),
                 columns=arguments.get("columns"),
             )
+        case "link_project_remote":
+            return client.link_project_remote(arguments["board_id"], arguments["remote_url"])
         case "delete_board":
             return client.delete_board(arguments["board_id"])
         case "import_board":

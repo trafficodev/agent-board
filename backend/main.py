@@ -22,6 +22,7 @@ from models import (
     CreateColumn,
     CreateEdge,
     EnsureProjectBoard,
+    LinkProjectRemote,
     MoveCard,
     RevertCard,
     UpdateBoard,
@@ -121,7 +122,12 @@ def api_get_board(board_id: str):
 
 @app.patch("/api/boards/{board_id}")
 def api_update_board(board_id: str, body: UpdateBoard):
-    board = bs.update_board(board_id, **body.model_dump(exclude_none=True))
+    try:
+        board = bs.update_board(board_id, **body.model_dump(exclude_none=True))
+    except bs.ProjectRemoteConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not board:
         raise HTTPException(404, "Board not found")
     _sync_board_if_enabled(board_id)
@@ -143,6 +149,20 @@ def api_ensure_project_board(body: EnsureProjectBoard):
         return bs.ensure_project_board(body.remote_url, body.name, body.description, body.columns)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/boards/{board_id}/project-remotes")
+def api_link_project_remote(board_id: str, body: LinkProjectRemote):
+    _validate_id(board_id, "board_id")
+    try:
+        board = bs.link_project_remote(board_id, body.remote_url)
+    except bs.ProjectRemoteConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not board:
+        raise HTTPException(404, "Board not found")
+    return board
 
 
 @app.post("/api/import/board", status_code=201)
