@@ -230,6 +230,9 @@ def delete_board(board_id: str) -> bool:
         cp = p.parent / f"{board_id}_cards.json"
         if cp.exists():
             cp.unlink()
+        qp = p.parent / f"{board_id}_open_questions.json"
+        if qp.exists():
+            qp.unlink()
         lp = p.parent / f"{board_id}.lock"
         if lp.exists():
             lp.unlink()

@@ -3,9 +3,8 @@
 import fcntl
 import json
 import os
-import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -41,13 +40,7 @@ DAG_ORDERED_COLUMN = "open items"
 # card_history keeps every version in full, so trimming here loses nothing.
 _HISTORY_LIMIT = 50
 
-_open_question_cache_lock = threading.Lock()
-_open_question_cache: dict[
-    Path,
-    tuple[tuple[int, int, int, int, int], tuple[dict, ...]],
-] = {}
-_open_question_cache_home: Path | None = None
-_OPEN_QUESTION_CACHE_RETRIES = 3
+_OPEN_QUESTIONS_SUFFIX = "_open_questions.json"
 
 
 # Set for the duration of one API request from the caller's session header.
@@ -182,6 +175,11 @@ def _write_cards(board_id: str, cards: list[Card]) -> None:
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(payload)
     os.replace(tmp, p)
+    try:
+        _write_open_question_projection(board_id, cards)
+    except OSError:
+        with suppress(OSError):
+            _open_questions_path(board_id).unlink(missing_ok=True)
 
 
 def _cards_fingerprint(path: Path) -> tuple[int, int, int, int, int] | None:
@@ -196,6 +194,49 @@ def _cards_fingerprint(path: Path) -> tuple[int, int, int, int, int] | None:
         stat.st_mtime_ns,
         stat.st_ctime_ns,
     )
+
+
+def _open_questions_path(board_id: str) -> Path:
+    cards_path = _cards_path(board_id)
+    return cards_path.with_name(f"{board_id}{_OPEN_QUESTIONS_SUFFIX}")
+
+
+def _write_open_question_projection(board_id: str, cards: list[Card]) -> None:
+    fingerprint = _cards_fingerprint(_cards_path(board_id))
+    if fingerprint is None:
+        return
+    path = _open_questions_path(board_id)
+    payload = {
+        "cards_fingerprint": list(fingerprint),
+        "questions": list(_question_items(board_id, cards)),
+    }
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(payload, stream, separators=(",", ":"))
+        os.replace(temporary, path)
+    finally:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+
+
+def _read_open_question_projection(
+    board_id: str,
+    fingerprint: tuple[int, int, int, int, int],
+) -> list[dict] | None:
+    try:
+        payload = json.loads(_open_questions_path(board_id).read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("cards_fingerprint") != list(fingerprint):
+        return None
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not all(isinstance(item, dict) for item in questions):
+        return None
+    return [dict(item) for item in questions]
 
 
 def _with_lock(board_id: str) -> Path:
@@ -718,59 +759,33 @@ def _question_items(board_id: str, cards: list[Card]) -> tuple[dict, ...]:
 
 def _open_questions_for_board(board_id: str) -> list[dict]:
     path = _cards_path(board_id)
-    for _ in range(_OPEN_QUESTION_CACHE_RETRIES):
+    before = _cards_fingerprint(path)
+    if before is None:
+        return []
+    projected = _read_open_question_projection(board_id, before)
+    after = _cards_fingerprint(path)
+    if projected is not None and before == after:
+        return projected
+
+    lock_path = _with_lock(board_id)
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
         fingerprint = _cards_fingerprint(path)
         if fingerprint is None:
-            with _open_question_cache_lock:
-                _open_question_cache.pop(path, None)
             return []
-
-        with _open_question_cache_lock:
-            cached = _open_question_cache.get(path)
-            if cached and cached[0] == fingerprint:
-                return [dict(item) for item in cached[1]]
-
-        try:
-            cards = _read_cards(board_id)
-        except FileNotFoundError:
-            continue
-        if _cards_fingerprint(path) != fingerprint:
-            continue
-
-        found = _question_items(board_id, cards)
-        with _open_question_cache_lock:
-            _open_question_cache[path] = (fingerprint, found)
-        return [dict(item) for item in found]
-
-    try:
-        return [dict(item) for item in _question_items(board_id, _read_cards(board_id))]
-    except FileNotFoundError:
-        return []
+        projected = _read_open_question_projection(board_id, fingerprint)
+        if projected is not None and fingerprint == _cards_fingerprint(path):
+            return projected
+        cards = _read_cards(board_id)
+        _write_open_question_projection(board_id, cards)
+        return [dict(item) for item in _question_items(board_id, cards)]
 
 
 def open_questions(board_id: str | None = None) -> list[dict]:
     """Every unanswered question, newest first, across one board or all of them."""
     from board_store import list_boards
 
-    global _open_question_cache_home
-    board_dir = _cards_path("").parent
-    with _open_question_cache_lock:
-        if _open_question_cache_home != board_dir:
-            _open_question_cache.clear()
-            _open_question_cache_home = board_dir
-
     board_ids = [board_id] if board_id else [board.id for board in list_boards()]
-    if board_id is None:
-        live_paths = {_cards_path(current_board_id) for current_board_id in board_ids}
-        with _open_question_cache_lock:
-            stale_paths = {
-                cached_path
-                for cached_path in _open_question_cache
-                if cached_path.parent == board_dir and cached_path not in live_paths
-            }
-            for stale_path in stale_paths:
-                _open_question_cache.pop(stale_path, None)
-
     found = [
         item
         for current_board_id in board_ids

@@ -107,6 +107,11 @@ class BoardConsolidationTest(unittest.TestCase):
             ["frontend/src/App.tsx"],
         )
         self.assertEqual(target_cards[parent.id].notes[0].text, "Still blocked?")
+        self.assertEqual(
+            [question["text"] for question in card_store.open_questions(self.target.id)],
+            ["Still blocked?"],
+        )
+        self.assertTrue(card_store._open_questions_path(self.target.id).exists())
         target_columns = {column.id for column in result.columns}
         self.assertIn(target_cards[parent.id].column_id, target_columns)
         self.assertTrue(all(
