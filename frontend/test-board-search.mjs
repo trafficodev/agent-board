@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { filterCardsForBoard, parseSearchQuery, requiresBackendSearch } from "./src/boardSearch.js";
+import { filterCardsForBoard, parseSearchQuery, requiresBackendSearch, sortCards } from "./src/boardSearch.js";
 
 const columns = [
   { id: "features", name: "Features", position: 0 },
@@ -97,6 +97,16 @@ describe("board search", () => {
     assert.deepEqual(search(cards, "", "all", "all", "priority_desc"), ["critical", "high", "low"]);
     assert.deepEqual(search(cards, "", "all", "all", "title_asc"), ["critical", "high", "low"]);
     assert.deepEqual(search(cards, "", "all", "all", "sessions_desc"), ["critical", "high", "low"]);
+  });
+
+  it("preserves AI relevance order when requested", () => {
+    const cards = [
+      card({ id: "third", position: 2 }),
+      card({ id: "first", position: 0 }),
+      card({ id: "second", position: 1 }),
+    ];
+
+    assert.deepEqual(sortCards(cards, "ai_relevance").map((item) => item.id), ["third", "first", "second"]);
   });
 
   it("excludes negative terms", () => {

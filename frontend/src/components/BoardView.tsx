@@ -85,6 +85,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
   }, [advancedFilters, search]);
 
   const useBackendSearch = requiresBackendSearch(effectiveSearch);
+  const sortOptions = aiCards ? [{ value: "ai_relevance", label: "AI relevance" }, ...BOARD_SORTS] : BOARD_SORTS;
 
   useEffect(() => {
     if (!useBackendSearch) {
@@ -269,6 +270,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
     setAiReasoning("");
     setAiError("");
     setAiLoading(false);
+    setSortMode((current) => current === "ai_relevance" ? "board" : current);
   };
 
   const updateSearchState = (update: () => void) => {
@@ -295,6 +297,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
       setAiCards(result.results);
       setAiReasoning(result.reasoning);
       setAiError(result.error ?? "");
+      setSortMode("ai_relevance");
     } catch (error) {
       if (ctrl.signal.aborted) return;
       setAiCards([]);
@@ -377,7 +380,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
               Advanced
             </button>
             <select value={sortMode} onChange={(e) => setSortMode(e.target.value)}>
-              {BOARD_SORTS.map((sort) => <option key={sort.value} value={sort.value}>{sort.label}</option>)}
+              {sortOptions.map((sort) => <option key={sort.value} value={sort.value}>{sort.label}</option>)}
             </select>
             <select value={priorityFilter} onChange={(e) => updateSearchState(() => setPriorityFilter(e.target.value as "all" | Card["priority"]))}>
               <option value="all">All priorities</option>

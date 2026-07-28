@@ -72,6 +72,7 @@ export function filterCardsForBoard(cards, columns, filters) {
 }
 
 export function sortCards(cards, sort = "board") {
+  if (sort === "ai_relevance") return [...cards];
   return [...cards].sort((a, b) => compareCards(a, b, sort));
 }
 
