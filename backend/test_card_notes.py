@@ -1,12 +1,15 @@
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-notes-test-")
 
 import board_store
 import card_store
-from models import AddNote, AnswerNote, CreateCard
+from models import AddNote, AnswerNote, CreateCard, UpdateCard
 
 
 class CardNotesTest(unittest.TestCase):
@@ -71,6 +74,89 @@ class CardNotesTest(unittest.TestCase):
         self.assertIn("q1", unscoped)
         self.assertIn("q2", unscoped)
         self.assertEqual([i["text"] for i in card_store.open_questions(other.id)], ["q2"])
+
+    def test_open_questions_reuses_unchanged_board_and_invalidates_after_write(self):
+        card_store.add_note(
+            self.board.id,
+            self.card.id,
+            AddNote(kind="question", text="cached?"),
+        )
+        card_store.open_questions(self.board.id)
+
+        with patch.object(card_store, "_read_cards", wraps=card_store._read_cards) as read_cards:
+            cached = card_store.open_questions(self.board.id)
+            self.assertEqual(read_cards.call_count, 0)
+            self.assertEqual(cached[0]["card_title"], "C")
+
+            card_store.update_card(
+                self.board.id,
+                self.card.id,
+                UpdateCard(title="Renamed"),
+            )
+            read_cards.reset_mock()
+
+            refreshed = card_store.open_questions(self.board.id)
+            self.assertEqual(read_cards.call_count, 1)
+            self.assertEqual(refreshed[0]["card_title"], "Renamed")
+            card_store.open_questions(self.board.id)
+            self.assertEqual(read_cards.call_count, 1)
+
+    def test_open_questions_invalidates_after_cross_process_replace(self):
+        card_store.add_note(
+            self.board.id,
+            self.card.id,
+            AddNote(kind="question", text="cross-process?"),
+        )
+        card_store.open_questions(self.board.id)
+        cards_path = card_store._cards_path(self.board.id)
+        script = """
+import json
+import os
+import sys
+import uuid
+from pathlib import Path
+
+path = Path(sys.argv[1])
+card_id = sys.argv[2]
+cards = json.loads(path.read_text())
+next(card for card in cards if card["id"] == card_id)["title"] = "External rename"
+temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+temporary.write_text(json.dumps(cards))
+os.replace(temporary, path)
+"""
+        subprocess.run(
+            [sys.executable, "-c", script, str(cards_path), self.card.id],
+            check=True,
+        )
+
+        refreshed = card_store.open_questions(self.board.id)
+
+        self.assertEqual(refreshed[0]["card_title"], "External rename")
+
+    def test_open_questions_bounds_retries_during_writer_churn(self):
+        card_store.add_note(
+            self.board.id,
+            self.card.id,
+            AddNote(kind="question", text="busy?"),
+        )
+        fingerprint_version = 0
+
+        def changing_fingerprint(_path):
+            nonlocal fingerprint_version
+            fingerprint_version += 1
+            return (1, fingerprint_version, 1, 1, 1)
+
+        with (
+            patch.object(card_store, "_cards_fingerprint", side_effect=changing_fingerprint),
+            patch.object(card_store, "_read_cards", wraps=card_store._read_cards) as read_cards,
+        ):
+            result = card_store.open_questions(self.board.id)
+
+        self.assertEqual(result[0]["text"], "busy?")
+        self.assertEqual(
+            read_cards.call_count,
+            card_store._OPEN_QUESTION_CACHE_RETRIES + 1,
+        )
 
     def test_empty_text_and_empty_answer_are_rejected(self):
         self.assertIsNone(card_store.add_note(self.board.id, self.card.id, AddNote(text="   ")))

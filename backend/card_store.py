@@ -3,6 +3,7 @@
 import fcntl
 import json
 import os
+import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -39,6 +40,14 @@ DAG_ORDERED_COLUMN = "open items"
 # convenience projection for anyone holding a card; the journal behind
 # card_history keeps every version in full, so trimming here loses nothing.
 _HISTORY_LIMIT = 50
+
+_open_question_cache_lock = threading.Lock()
+_open_question_cache: dict[
+    Path,
+    tuple[tuple[int, int, int, int, int], tuple[dict, ...]],
+] = {}
+_open_question_cache_home: Path | None = None
+_OPEN_QUESTION_CACHE_RETRIES = 3
 
 
 # Set for the duration of one API request from the caller's session header.
@@ -173,6 +182,20 @@ def _write_cards(board_id: str, cards: list[Card]) -> None:
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(payload)
     os.replace(tmp, p)
+
+
+def _cards_fingerprint(path: Path) -> tuple[int, int, int, int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
 
 
 def _with_lock(board_id: str) -> Path:
@@ -643,26 +666,78 @@ def answer_note(board_id: str, card_id: str, note_id: str, data: AnswerNote) -> 
         return card
 
 
+def _question_items(board_id: str, cards: list[Card]) -> tuple[dict, ...]:
+    return tuple({
+        "board_id": board_id,
+        "card_id": card.id,
+        "card_title": card.title,
+        "note_id": note.id,
+        "text": note.text,
+        "session_id": note.session_id,
+        "created_at": note.created_at.isoformat(),
+    } for card in cards for note in card.notes if is_open_question(note))
+
+
+def _open_questions_for_board(board_id: str) -> list[dict]:
+    path = _cards_path(board_id)
+    for _ in range(_OPEN_QUESTION_CACHE_RETRIES):
+        fingerprint = _cards_fingerprint(path)
+        if fingerprint is None:
+            with _open_question_cache_lock:
+                _open_question_cache.pop(path, None)
+            return []
+
+        with _open_question_cache_lock:
+            cached = _open_question_cache.get(path)
+            if cached and cached[0] == fingerprint:
+                return [dict(item) for item in cached[1]]
+
+        try:
+            cards = _read_cards(board_id)
+        except FileNotFoundError:
+            continue
+        if _cards_fingerprint(path) != fingerprint:
+            continue
+
+        found = _question_items(board_id, cards)
+        with _open_question_cache_lock:
+            _open_question_cache[path] = (fingerprint, found)
+        return [dict(item) for item in found]
+
+    try:
+        return [dict(item) for item in _question_items(board_id, _read_cards(board_id))]
+    except FileNotFoundError:
+        return []
+
+
 def open_questions(board_id: str | None = None) -> list[dict]:
     """Every unanswered question, newest first, across one board or all of them."""
     from board_store import list_boards
 
-    board_ids = [board_id] if board_id else [b.id for b in list_boards()]
-    found: list[dict] = []
-    for bid in board_ids:
-        for card in _read_cards(bid):
-            for note in card.notes:
-                if not is_open_question(note):
-                    continue
-                found.append({
-                    "board_id": bid,
-                    "card_id": card.id,
-                    "card_title": card.title,
-                    "note_id": note.id,
-                    "text": note.text,
-                    "session_id": note.session_id,
-                    "created_at": note.created_at.isoformat(),
-                })
+    global _open_question_cache_home
+    board_dir = _cards_path("").parent
+    with _open_question_cache_lock:
+        if _open_question_cache_home != board_dir:
+            _open_question_cache.clear()
+            _open_question_cache_home = board_dir
+
+    board_ids = [board_id] if board_id else [board.id for board in list_boards()]
+    if board_id is None:
+        live_paths = {_cards_path(current_board_id) for current_board_id in board_ids}
+        with _open_question_cache_lock:
+            stale_paths = {
+                cached_path
+                for cached_path in _open_question_cache
+                if cached_path.parent == board_dir and cached_path not in live_paths
+            }
+            for stale_path in stale_paths:
+                _open_question_cache.pop(stale_path, None)
+
+    found = [
+        item
+        for current_board_id in board_ids
+        for item in _open_questions_for_board(current_board_id)
+    ]
     found.sort(key=lambda item: item["created_at"], reverse=True)
     return found
 
