@@ -396,6 +396,24 @@ def create_card(board_id: str, data: CreateCard) -> Card | None:
         return apply_create(tx, board_id, data)
 
 
+def upsert_card(board_id: str, data: CreateCard) -> Card | None:
+    if not data.external_id:
+        raise ValueError("external_id is required")
+    with board_transaction(board_id) as tx:
+        existing = next(
+            (card for card in tx.cards if card.external_id == data.external_id),
+            None,
+        )
+        if existing is None:
+            return apply_create(tx, board_id, data)
+        return apply_update(
+            tx,
+            board_id,
+            existing.id,
+            UpdateCard(**data.model_dump(exclude={"position"})),
+        )
+
+
 def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard) -> Card | None:
     """Update one card inside an already-open transaction."""
     card = next((c for c in tx.cards if c.id == card_id), None)
