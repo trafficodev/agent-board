@@ -396,6 +396,24 @@ def create_card(board_id: str, data: CreateCard) -> Card | None:
         return apply_create(tx, board_id, data)
 
 
+def _matches_upsert(card: Card, data: CreateCard) -> bool:
+    metadata = {
+        key: value
+        for key, value in card.metadata.items()
+        if key != CLOSED_AT_METADATA_KEY
+    }
+    return (
+        card.external_id == data.external_id
+        and card.title == data.title
+        and card.body == data.body
+        and card.column_id == data.column_id
+        and card.parent_id == data.parent_id
+        and card.priority == data.priority
+        and card.labels == [label.lower() for label in data.labels]
+        and metadata == data.metadata
+    )
+
+
 def upsert_card(board_id: str, data: CreateCard) -> Card | None:
     if not data.external_id:
         raise ValueError("external_id is required")
@@ -406,6 +424,8 @@ def upsert_card(board_id: str, data: CreateCard) -> Card | None:
         )
         if existing is None:
             return apply_create(tx, board_id, data)
+        if _matches_upsert(existing, data):
+            return existing
         return apply_update(
             tx,
             board_id,

@@ -64,6 +64,28 @@ class CardUpsertTest(unittest.TestCase):
                 CreateCard(title="No identity", column_id=self.open_id),
             )
 
+    def test_unchanged_upsert_does_not_rewrite_cards_or_history(self):
+        payload = CreateCard(
+            external_id="assistant:req-2",
+            title="Stable",
+            body="Evidence",
+            column_id=self.open_id,
+            labels=["Assistant"],
+            metadata={"severity": "high"},
+            priority="high",
+        )
+        created = card_store.upsert_card(self.board.id, payload)
+        original_updated_at = created.updated_at
+        original_history = list(created.session_history)
+
+        with patch.object(card_store, "_write_cards", wraps=card_store._write_cards) as write_cards:
+            unchanged = card_store.upsert_card(self.board.id, payload)
+
+        self.assertEqual(write_cards.call_count, 0)
+        self.assertEqual(unchanged.id, created.id)
+        self.assertEqual(unchanged.updated_at, original_updated_at)
+        self.assertEqual(unchanged.session_history, original_history)
+
 
 if __name__ == "__main__":
     unittest.main()
