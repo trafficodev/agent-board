@@ -3,112 +3,112 @@ per-board alongside cards/columns. `type` is a free-form string (e.g.
 "blocked_by", "blocks", "duplicates", "relates_to") — no fixed vocabulary,
 same open-ended approach labels already take."""
 
-import fcntl
-import json
-from pathlib import Path
-
+import db
 from models import CreateEdge, Edge, Event
-from paths import edges_path, events_path
 
 from board_store import get_board
 
 
-def _edges_path(board_id: str) -> Path:
-    return edges_path(board_id)
-
-
 def read_edges(board_id: str) -> list[Edge]:
-    p = _edges_path(board_id)
-    if not p.exists():
-        return []
-    data = json.loads(p.read_text())
-    return [Edge.model_validate(e) for e in data]
+    return [
+        db.edge_from_row(row)
+        for row in db.connect().execute(
+            "SELECT * FROM edges WHERE board_id=? ORDER BY created_at, rowid", (board_id,)
+        )
+    ]
 
 
 def write_edges(board_id: str, edges: list[Edge]) -> None:
-    p = _edges_path(board_id)
-    p.write_text(json.dumps([e.model_dump(mode="json") for e in edges], indent=2, default=str))
+    """Persist a board's edge set as given.
 
-
-def _with_edge_transaction(board_id: str, mutate):
-    from card_store import _with_lock
-
-    lock_path = _with_lock(board_id)
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            result, edges, event = mutate(read_edges(board_id))
-            if edges is None:
-                return result
-            write_edges(board_id, edges)
-            if event:
-                ep = events_path(board_id)
-                with open(ep, "a") as f:
-                    f.write(event.model_dump_json() + "\n")
-            return result
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    Callers hand over the whole set because they have just filtered or extended
+    it, so the stored set is reconciled to match: rows no longer present go, the
+    rest are written. A board holds few enough edges that this stays one small
+    statement plus one write per edge.
+    """
+    with db.transaction() as conn:
+        keep = [edge.id for edge in edges]
+        if keep:
+            placeholders = ",".join("?" * len(keep))
+            conn.execute(
+                f"DELETE FROM edges WHERE board_id=? AND id NOT IN ({placeholders})",
+                [board_id, *keep],
+            )
+        else:
+            conn.execute("DELETE FROM edges WHERE board_id=?", (board_id,))
+        for edge in edges:
+            db.write_edge(conn, edge)
 
 
 def _reorder_dependents(board_id: str) -> None:
     """A dependency-ordered column reads its order off this graph, so every
-    edge write has to let the card store re-derive it. Called after the edge
-    file is written and its lock released — the card store takes the same
-    per-board lock."""
+    edge write has to let the card store re-derive it."""
     from card_store import reindex_dag_columns
 
     reindex_dag_columns(board_id)
 
 
 def list_edges(board_id: str, card_id: str | None = None, type: str | None = None) -> list[Edge]:
-    edges = read_edges(board_id)
+    where = ["board_id = ?"]
+    params: list = [board_id]
     if card_id:
-        edges = [e for e in edges if e.from_card_id == card_id or e.to_card_id == card_id]
+        # Both directions, each served by its own index.
+        where.append("(from_card_id = ? OR to_card_id = ?)")
+        params.extend([card_id, card_id])
     if type:
-        edges = [e for e in edges if e.type == type]
-    return edges
+        where.append("type = ?")
+        params.append(type)
+    return [
+        db.edge_from_row(row)
+        for row in db.connect().execute(
+            f"SELECT * FROM edges WHERE {' AND '.join(where)} ORDER BY created_at, rowid",
+            params,
+        )
+    ]
 
 
 def get_edge(board_id: str, edge_id: str) -> Edge | None:
-    return next((e for e in read_edges(board_id) if e.id == edge_id), None)
+    row = db.connect().execute(
+        "SELECT * FROM edges WHERE board_id=? AND id=?", (board_id, edge_id)
+    ).fetchone()
+    return db.edge_from_row(row) if row else None
 
 
 def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
-    def mutate(edges):
-        from card_store import _read_cards
-
+    with db.transaction() as conn:
         if not get_board(board_id):
-            return None, None, None
-        card_ids = {card.id for card in _read_cards(board_id)}
-        if data.from_card_id not in card_ids or data.to_card_id not in card_ids:
-            return None, None, None
+            return None
+        # Both endpoints must be real cards, or the graph grows references to
+        # nothing and the dependency order walks off the board.
+        found = {
+            row["id"] for row in conn.execute(
+                "SELECT id FROM cards WHERE board_id=? AND id IN (?,?)",
+                (board_id, data.from_card_id, data.to_card_id),
+            )
+        }
+        if data.from_card_id not in found or data.to_card_id not in found:
+            return None
         edge = Edge(
             board_id=board_id, from_card_id=data.from_card_id, to_card_id=data.to_card_id,
             type=data.type, label=data.label,
         )
-        edges.append(edge)
-        return edge, edges, Event(
+        db.write_edge(conn, edge)
+        db.write_event(conn, Event(
             type="edge_created",
+            board_id=board_id,
             detail=f"{data.type}: {data.from_card_id[:8]}… → {data.to_card_id[:8]}…",
-        )
-
-    edge = _with_edge_transaction(board_id, mutate)
-    if edge is None:
-        return None
+        ))
     _reorder_dependents(board_id)
     return edge
 
 
 def delete_edge(board_id: str, edge_id: str) -> bool:
-    def mutate(edges):
-        edge = next((candidate for candidate in edges if candidate.id == edge_id), None)
-        if not edge:
-            return False, None, None
-        remaining = [candidate for candidate in edges if candidate.id != edge_id]
-        return True, remaining, Event(type="edge_deleted", detail=edge_id)
-
-    deleted = _with_edge_transaction(board_id, mutate)
-    if not deleted:
-        return False
+    with db.transaction() as conn:
+        cursor = conn.execute(
+            "DELETE FROM edges WHERE board_id=? AND id=?", (board_id, edge_id)
+        )
+        if not cursor.rowcount:
+            return False
+        db.write_event(conn, Event(type="edge_deleted", board_id=board_id, detail=edge_id))
     _reorder_dependents(board_id)
     return True

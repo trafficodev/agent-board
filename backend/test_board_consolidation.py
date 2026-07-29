@@ -111,7 +111,9 @@ class BoardConsolidationTest(unittest.TestCase):
             [question["text"] for question in card_store.open_questions(self.target.id)],
             ["Still blocked?"],
         )
-        self.assertTrue(card_store._open_questions_path(self.target.id).exists())
+        self.assertTrue(
+            any(q['card_id'] == parent.id for q in card_store.open_questions(self.target.id))
+        )
         target_columns = {column.id for column in result.columns}
         self.assertIn(target_cards[parent.id].column_id, target_columns)
         self.assertTrue(all(
@@ -275,7 +277,7 @@ class BoardConsolidationTest(unittest.TestCase):
 
         self.assertTrue(writer_done.is_set())
         self.assertEqual(writer_result, [None])
-        self.assertFalse(edge_store.edges_path(self.source.id).exists())
+        self.assertEqual(edge_store.list_edges(self.source.id), [])
 
     def test_identical_card_id_is_deduplicated(self):
         source_open = self._column(self.source, "Open Items")

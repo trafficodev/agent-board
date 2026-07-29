@@ -1,43 +1,39 @@
 """Read side of the card journal.
 
-``events.jsonl`` is the authoritative history of every card: append-only, never
-truncated, and independent of the card document, so history outlives both the
+The ``events`` table is the authoritative history of every card: append-only,
+never truncated, and independent of the card row, so history outlives both the
 card's own capped ``session_history`` projection and the card's deletion. This
 module only reads and replays it; the store owns appending, because an append
-has to happen under the same board lock as the card write it describes.
+has to happen in the same transaction as the card write it describes.
 """
 
 from datetime import datetime, timezone
 
+import db
 from models import CardVersion, Event
-from paths import events_path
 
 from card_diff import diff_snapshots
+
 
 def read_events(board_id: str, tail: int | None = None) -> list[Event]:
     """A board's events, oldest first, or only the last ``tail`` of them.
 
-    A crash can interrupt an append mid-line, so a torn *final* line is
-    tolerated. An unparseable line anywhere else means the journal is corrupt
-    and is raised rather than skipped: silently dropping an interior record
-    renumbers every version after it, which would make a revert restore the
-    wrong content.
+    ``seq`` is the journal's total order, so a tail is the last N rows by seq
+    read back in ascending order -- never a re-sort by timestamp, which would
+    reorder events written inside the same transaction.
     """
-    path = events_path(board_id)
-    if not path.exists():
+    if tail is not None and tail <= 0:
         return []
-    lines = [line for line in path.read_text().splitlines() if line.strip()]
-    if tail is not None:
-        lines = lines[-tail:] if tail > 0 else []
-    events: list[Event] = []
-    for index, line in enumerate(lines):
-        try:
-            events.append(Event.model_validate_json(line))
-        except ValueError as exc:
-            if index == len(lines) - 1:
-                break
-            raise ValueError(f"{path}: corrupt journal record at line {index + 1}") from exc
-    return events
+    if tail is None:
+        rows = db.connect().execute(
+            "SELECT * FROM events WHERE board_id=? ORDER BY seq", (board_id,)
+        ).fetchall()
+    else:
+        rows = db.connect().execute(
+            "SELECT * FROM events WHERE board_id=? ORDER BY seq DESC LIMIT ?",
+            (board_id, tail),
+        ).fetchall()[::-1]
+    return [db.event_from_row(row) for row in rows]
 
 
 def card_versions(board_id: str, card_id: str) -> list[CardVersion]:
@@ -48,9 +44,12 @@ def card_versions(board_id: str, card_id: str) -> list[CardVersion]:
     """
     previous: dict = {}
     versions: list[CardVersion] = []
-    for event in read_events(board_id):
-        if event.card_id != card_id or event.snapshot is None:
-            continue
+    rows = db.connect().execute(
+        "SELECT * FROM events WHERE board_id=? AND card_id=? AND snapshot IS NOT NULL"
+        " ORDER BY seq",
+        (board_id, card_id),
+    ).fetchall()
+    for event in (db.event_from_row(row) for row in rows):
         snapshot = event.snapshot
         versions.append(CardVersion(
             version=len(versions) + 1,
@@ -82,18 +81,19 @@ def session_activity(session_id: str, board_id: str | None = None, limit: int = 
     """What one session did, newest first, across every board or just one.
 
     This is the question the per-card view cannot answer: a session's work
-    normally spans cards and boards.
+    normally spans cards and boards. One indexed query by session, rather than
+    reading every board's journal and filtering.
     """
-    from board_store import list_boards
-
     if not session_id:
         return []
-    board_ids = [board_id] if board_id else [b.id for b in list_boards()]
-    found = [
-        event
-        for bid in board_ids
-        for event in read_events(bid)
-        if event.session_id == session_id
-    ]
-    found.sort(key=lambda event: event.timestamp, reverse=True)
-    return found[:limit]
+    where = ["session_id = ?"]
+    params: list = [session_id]
+    if board_id:
+        where.append("board_id = ?")
+        params.append(board_id)
+    params.append(limit)
+    rows = db.connect().execute(
+        f"SELECT * FROM events WHERE {' AND '.join(where)} ORDER BY seq DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [db.event_from_row(row) for row in rows]

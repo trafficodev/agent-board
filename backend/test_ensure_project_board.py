@@ -106,17 +106,35 @@ class EnsureProjectBoardTest(unittest.TestCase):
             {"github.com/acme/widgets", "gitlab.com/acme/widgets-public"},
         )
 
-    def test_board_json_without_remote_aliases_still_loads(self):
-        board = board_store.ensure_project_board("git@github.com:acme/widgets.git")
-        path = Path(os.environ["AGENT_BOARD_HOME"]) / "boards" / f"{board.id}.json"
-        data = json.loads(path.read_text())
-        del data["remote_aliases"]
-        path.write_text(json.dumps(data))
+    def test_legacy_board_json_without_remote_aliases_migrates(self):
+        """Board documents predating remote_aliases must still import, and the
+        board must still be findable by the remote it does carry."""
+        import db
 
-        reloaded = board_store.get_board(board.id)
+        boards_dir = Path(os.environ["AGENT_BOARD_HOME"]) / "boards"
+        boards_dir.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "id": "legacy000001",
+            "name": "Widgets",
+            "description": "",
+            "remote_url": "git@github.com:acme/widgets.git",
+            "columns": [
+                {"id": "legacycol001", "board_id": "legacy000001", "name": "Open", "position": 0}
+            ],
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }
+        (boards_dir / "legacy000001.json").write_text(json.dumps(legacy))
+        db.connect().execute("DELETE FROM schema_meta WHERE key='json_migrated'")
 
+        db.migrate_json_if_needed()
+
+        reloaded = board_store.get_board("legacy000001")
         self.assertEqual(reloaded.remote_aliases, [])
-        self.assertEqual(board_store.get_board_by_remote_url(board.remote_url).id, board.id)
+        self.assertEqual(
+            board_store.get_board_by_remote_url("git@github.com:acme/widgets.git").id,
+            "legacy000001",
+        )
 
     def test_link_project_remote_api_reports_conflict(self):
         private = board_store.ensure_project_board("git@gitlab.com:acme/widgets-private.git")

@@ -1,14 +1,11 @@
-"""Card persistence. Cards are stored in per-board JSON files."""
+"""Card persistence. One row per card in SQLite."""
 
-import fcntl
-import json
 import os
-import uuid
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
+import db
 from models import (
     AddNote,
     AddSession,
@@ -23,8 +20,6 @@ from models import (
     UpdateCard,
     _now,
 )
-from paths import board_path, events_path
-
 import card_history
 from board_store import get_board
 from card_diff import diff_snapshots, snapshot_of
@@ -39,8 +34,6 @@ DAG_ORDERED_COLUMN = "open items"
 # convenience projection for anyone holding a card; the journal behind
 # card_history keeps every version in full, so trimming here loses nothing.
 _HISTORY_LIMIT = 50
-
-_OPEN_QUESTIONS_SUFFIX = "_open_questions.json"
 
 
 # Set for the duration of one API request from the caller's session header.
@@ -114,10 +107,6 @@ def _record(
     )
 
 
-def _cards_path(board_id: str) -> Path:
-    return board_path(board_id).parent / f"{board_id}_cards.json"
-
-
 def _dag_ordered_column_ids(board_id: str) -> set[str]:
     """The columns whose order is owned by the dependency graph. The backlog is
     the one place order answers "what can I pick up next", so it is the one
@@ -157,94 +146,72 @@ def _reindex_column(board_id: str, cards: list[Card], column_id: str, edges: lis
         c.position = i
 
 
+def _card_rows(conn, board_id: str, **filters) -> list[Card]:
+    """Cards matching an indexed filter, in column order.
+
+    Filters are pushed into SQL rather than applied after loading the board:
+    that is the difference between a query and a full deserialization, and it
+    is why the store moved off one document per board.
+    """
+    where = ["board_id = ?"]
+    params: list = [board_id]
+    if filters.get("column_id"):
+        where.append("column_id = ?")
+        params.append(filters["column_id"])
+    if filters.get("priority"):
+        where.append("priority = ?")
+        params.append(filters["priority"])
+    if filters.get("parent_id") is not None:
+        parent_id = filters["parent_id"]
+        # An explicit "no parent" is a real filter, not a missing one.
+        if parent_id in ("", "null", None):
+            where.append("parent_id IS NULL")
+        else:
+            where.append("parent_id = ?")
+            params.append(parent_id)
+    if filters.get("label"):
+        where.append(
+            "id IN (SELECT card_id FROM card_labels WHERE board_id = ? AND label = ?)"
+        )
+        params.extend([board_id, filters["label"].lower()])
+    rows = conn.execute(
+        f"SELECT * FROM cards WHERE {' AND '.join(where)} ORDER BY position, rowid", params
+    ).fetchall()
+    return db.hydrate_cards(conn, rows)
+
+
 def _read_cards(board_id: str) -> list[Card]:
-    p = _cards_path(board_id)
-    if not p.exists():
-        return []
-    data = json.loads(p.read_text())
-    return [Card.model_validate(c) for c in data]
+    return _card_rows(db.connect(), board_id)
 
 
-def _write_cards(board_id: str, cards: list[Card]) -> None:
-    """Replace the cards file atomically, so a concurrent reader sees either
-    the whole previous file or the whole new one, never a half-written one."""
-    p = _cards_path(board_id)
-    payload = json.dumps([c.model_dump(mode="json") for c in cards], indent=2, default=str)
-    # Unique per call, not per process: two writers sharing a temp name would
-    # have one rename away the file the other is still writing.
-    tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(payload)
-    os.replace(tmp, p)
-    try:
-        _write_open_question_projection(board_id, cards)
-    except OSError:
-        with suppress(OSError):
-            _open_questions_path(board_id).unlink(missing_ok=True)
+def _write_cards(
+    board_id: str, cards: list[Card], original: dict[str, dict] | None = None
+) -> None:
+    """Persist a card list as the board's whole set, writing only what changed.
 
-
-def _cards_fingerprint(path: Path) -> tuple[int, int, int, int, int] | None:
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return None
-    return (
-        stat.st_dev,
-        stat.st_ino,
-        stat.st_size,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-    )
-
-
-def _open_questions_path(board_id: str) -> Path:
-    cards_path = _cards_path(board_id)
-    return cards_path.with_name(f"{board_id}{_OPEN_QUESTIONS_SUFFIX}")
-
-
-def _write_open_question_projection(board_id: str, cards: list[Card]) -> None:
-    fingerprint = _cards_fingerprint(_cards_path(board_id))
-    if fingerprint is None:
-        return
-    path = _open_questions_path(board_id)
-    payload = {
-        "cards_fingerprint": list(fingerprint),
-        "questions": list(_question_items(board_id, cards)),
-    }
-    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w") as stream:
-            json.dump(payload, stream, separators=(",", ":"))
-        os.replace(temporary, path)
-    finally:
-        with suppress(OSError):
-            temporary.unlink(missing_ok=True)
-
-
-def _read_open_question_projection(
-    board_id: str,
-    fingerprint: tuple[int, int, int, int, int],
-) -> list[dict] | None:
-    try:
-        payload = json.loads(_open_questions_path(board_id).read_text())
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("cards_fingerprint") != list(fingerprint):
-        return None
-    questions = payload.get("questions")
-    if not isinstance(questions, list) or not all(isinstance(item, dict) for item in questions):
-        return None
-    return [dict(item) for item in questions]
-
-
-def _with_lock(board_id: str) -> Path:
-    """Return a lock file path for a board. Shared with edge_store and
-    board_store so every write to a board's files serializes on one lock."""
-    d = board_path(board_id).parent
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{board_id}.lock"
+    ``original`` is what the caller's transaction read. Rewriting every card on
+    every mutation is what the JSON document did and what made a large board
+    slow; here an untouched card costs nothing. A caller that has no baseline
+    -- anything replacing a board's cards outright -- gets it read here, so the
+    saving is an optimization rather than a contract the caller has to honour.
+    """
+    with db.transaction() as conn:
+        if original is None:
+            original = {
+                card.id: card.model_dump(mode="json")
+                for card in _card_rows(conn, board_id)
+            }
+        surviving = set()
+        for card in cards:
+            surviving.add(card.id)
+            snapshot = card.model_dump(mode="json")
+            if original.get(card.id) != snapshot:
+                db.write_card(conn, card)
+        removed = set(original) - surviving
+        if removed:
+            conn.executemany(
+                "DELETE FROM cards WHERE id=?", [(card_id,) for card_id in removed]
+            )
 
 
 class _Transaction:
@@ -265,6 +232,9 @@ class _Transaction:
         self.events: list[Event] = []
         self.edges_dirty = False
         self.commit = False
+        # What was on disk when this transaction opened, so the write can tell
+        # which cards it actually has to touch.
+        self.original = {card.id: card.model_dump(mode="json") for card in cards}
 
     def record(self, *events: Event) -> None:
         self.events.extend(events)
@@ -283,29 +253,25 @@ class _Transaction:
 
 @contextmanager
 def board_transaction(board_id: str):
-    """Read, mutate and write a board's cards under a single lock.
+    """Read, mutate and write a board's cards in one write transaction.
 
-    The read has to happen inside the lock: a mutator rewrites the whole cards
-    list, so reading it before acquiring the lock lets two concurrent writers
+    The read has to happen inside the transaction: a mutator works on a list it
+    read, so reading before taking the write lock lets two concurrent writers
     each save a list that is missing the other's card. That would also strand
     the journal, which would still hold a `created` record for a card no longer
-    on the board.
+    on the board. BEGIN IMMEDIATE is what makes that impossible, and it is why
+    the old per-board lock file is gone.
     """
-    lock_path = _with_lock(board_id)
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            tx = _Transaction(_read_cards(board_id), read_edges(board_id))
-            yield tx
-            if tx.commit:
-                _write_cards(board_id, tx.cards)
-                if tx.edges_dirty:
-                    write_edges(board_id, tx.edges)
-                if tx.events:
-                    with open(events_path(board_id), "a") as f:
-                        f.writelines(event.model_dump_json() + "\n" for event in tx.events)
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    with db.transaction():
+        tx = _Transaction(_read_cards(board_id), read_edges(board_id))
+        yield tx
+        if tx.commit:
+            _write_cards(board_id, tx.cards, tx.original)
+            if tx.edges_dirty:
+                write_edges(board_id, tx.edges)
+            for event in tx.events:
+                event.board_id = event.board_id or board_id
+                db.write_event(db.connect(), event)
 
 
 def reindex_dag_columns(board_id: str) -> None:
@@ -378,22 +344,20 @@ def _prune_expired_closed_cards(board_id: str) -> None:
 
 def list_cards(board_id: str, priority: str | None = None, label: str | None = None, column_id: str | None = None, parent_id: str | None = None) -> list[Card]:
     _prune_expired_closed_cards(board_id)
-    cards = _read_cards(board_id)
-    if priority:
-        cards = [c for c in cards if c.priority == priority]
-    if label:
-        cards = [c for c in cards if label.lower() in [l.lower() for l in c.labels]]
-    if column_id:
-        cards = [c for c in cards if c.column_id == column_id]
-    if parent_id is not None:
-        cards = [c for c in cards if c.parent_id == parent_id]
-    return sorted(cards, key=lambda c: c.position)
+    return _card_rows(
+        db.connect(), board_id,
+        priority=priority, label=label, column_id=column_id, parent_id=parent_id,
+    )
 
 
 def get_card(board_id: str, card_id: str) -> Card | None:
     _prune_expired_closed_cards(board_id)
-    cards = _read_cards(board_id)
-    return next((c for c in cards if c.id == card_id), None)
+    conn = db.connect()
+    rows = conn.execute(
+        "SELECT * FROM cards WHERE board_id=? AND id=?", (board_id, card_id)
+    ).fetchall()
+    cards = db.hydrate_cards(conn, rows)
+    return cards[0] if cards else None
 
 
 def apply_create(tx: _Transaction, board_id: str, data: CreateCard) -> Card | None:
@@ -745,54 +709,28 @@ def answer_note(board_id: str, card_id: str, note_id: str, data: AnswerNote) -> 
         return card
 
 
-def _question_items(board_id: str, cards: list[Card]) -> tuple[dict, ...]:
-    return tuple({
-        "board_id": board_id,
-        "card_id": card.id,
-        "card_title": card.title,
-        "note_id": note.id,
-        "text": note.text,
-        "session_id": note.session_id,
-        "created_at": note.created_at.isoformat(),
-    } for card in cards for note in card.notes if is_open_question(note))
-
-
-def _open_questions_for_board(board_id: str) -> list[dict]:
-    path = _cards_path(board_id)
-    before = _cards_fingerprint(path)
-    if before is None:
-        return []
-    projected = _read_open_question_projection(board_id, before)
-    after = _cards_fingerprint(path)
-    if projected is not None and before == after:
-        return projected
-
-    lock_path = _with_lock(board_id)
-    with open(lock_path, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        fingerprint = _cards_fingerprint(path)
-        if fingerprint is None:
-            return []
-        projected = _read_open_question_projection(board_id, fingerprint)
-        if projected is not None and fingerprint == _cards_fingerprint(path):
-            return projected
-        cards = _read_cards(board_id)
-        _write_open_question_projection(board_id, cards)
-        return [dict(item) for item in _question_items(board_id, cards)]
-
-
 def open_questions(board_id: str | None = None) -> list[dict]:
-    """Every unanswered question, newest first, across one board or all of them."""
-    from board_store import list_boards
+    """Every unanswered question, newest first, across one board or all of them.
 
-    board_ids = [board_id] if board_id else [board.id for board in list_boards()]
-    found = [
-        item
-        for current_board_id in board_ids
-        for item in _open_questions_for_board(current_board_id)
-    ]
-    found.sort(key=lambda item: item["created_at"], reverse=True)
-    return found
+    One indexed query against the partial index over unanswered questions. The
+    old cached projection file and its fingerprint invalidation existed only
+    because answering this meant reading every card of every board; nothing has
+    to be cached now, so nothing can go stale.
+    """
+    where = ["n.kind = 'question'", "n.answer = ''"]
+    params: list = []
+    if board_id:
+        where.append("n.board_id = ?")
+        params.append(board_id)
+    rows = db.connect().execute(
+        f"""SELECT n.board_id, n.card_id, c.title AS card_title, n.id AS note_id,
+                   n.text, n.session_id, n.created_at
+              FROM card_notes n JOIN cards c ON c.id = n.card_id
+             WHERE {' AND '.join(where)}
+             ORDER BY n.created_at DESC""",
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def revert_card(board_id: str, card_id: str, data: RevertCard) -> Card | None:

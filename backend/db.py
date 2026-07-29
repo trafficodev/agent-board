@@ -237,6 +237,7 @@ def connect() -> sqlite3.Connection:
     )
     _local.conn = conn
     _local.path = path
+    _local.depth = 0
     return conn
 
 
@@ -246,6 +247,7 @@ def close() -> None:
         conn.close()
         _local.conn = None
         _local.path = None
+        _local.depth = 0
 
 
 class transaction:
@@ -254,21 +256,41 @@ class transaction:
     BEGIN IMMEDIATE takes the write lock up front, which is what makes a
     read-modify-write safe across processes: two writers cannot both read, then
     both write, and lose one of the two changes.
+
+    Re-entrant. A mutation routinely calls a helper that opens a transaction of
+    its own, and that inner block must join the outer one rather than start a
+    second: committing early would publish half a change, and SQLite refuses a
+    nested BEGIN outright. Only the outermost block commits or rolls back, so
+    the whole nest is still all-or-nothing.
     """
 
     def __init__(self):
         self.conn = connect()
+        self.outermost = False
 
     def __enter__(self) -> sqlite3.Connection:
-        self.conn.execute("BEGIN IMMEDIATE")
+        depth = getattr(_local, "depth", 0)
+        if depth == 0:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.outermost = True
+        _local.depth = depth + 1
         return self.conn
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        _local.depth = getattr(_local, "depth", 1) - 1
+        if not self.outermost:
+            # An inner failure still unwinds to the outermost block, which is
+            # what rolls the whole nest back.
+            return False
         if exc_type is None:
             self.conn.execute("COMMIT")
         else:
             self.conn.execute("ROLLBACK")
         return False
+
+
+def in_transaction() -> bool:
+    return getattr(_local, "depth", 0) > 0
 
 
 # --- Row <-> model ---
@@ -386,6 +408,7 @@ def write_card(conn: sqlite3.Connection, card: Card) -> None:
                 position, priority, metadata, created_at, updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
+               board_id=excluded.board_id,
                external_id=excluded.external_id, title=excluded.title,
                body=excluded.body, column_id=excluded.column_id,
                parent_id=excluded.parent_id, position=excluded.position,
@@ -456,6 +479,7 @@ def write_edge(conn: sqlite3.Connection, edge: Edge) -> None:
                (id, board_id, from_card_id, to_card_id, type, label, created_at)
            VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
+               board_id=excluded.board_id,
                from_card_id=excluded.from_card_id, to_card_id=excluded.to_card_id,
                type=excluded.type, label=excluded.label""",
         (
@@ -474,8 +498,13 @@ def hydrate_cards(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[Car
     placeholders = ",".join("?" * len(ids))
 
     labels: dict[str, list[str]] = {}
+    # rowid order is insertion order, which is the order the card declared its
+    # labels in. Without it a card read back compares unequal to itself, and
+    # every no-op upsert would look like a change.
     for row in conn.execute(
-        f"SELECT card_id, label FROM card_labels WHERE card_id IN ({placeholders})", ids
+        f"SELECT card_id, label FROM card_labels WHERE card_id IN ({placeholders})"
+        " ORDER BY card_id, rowid",
+        ids,
     ):
         labels.setdefault(row["card_id"], []).append(row["label"])
 
@@ -568,13 +597,20 @@ def _insert_board(conn: sqlite3.Connection, board: Board) -> None:
                VALUES (?,?,?,?)""",
             (column.id, board.id, column.name, column.position),
         )
+    # Imported here rather than at module scope: board_store is built on this
+    # module, and normalization is the one thing the migration needs from it.
+    from board_store import normalize_remote_url
+
     remotes = [(board.remote_url, 1)] if board.remote_url else []
     remotes += [(alias, 0) for alias in board.remote_aliases]
     for url, primary in remotes:
+        normalized = normalize_remote_url(url)
+        if not normalized:
+            continue
         conn.execute(
             """INSERT OR IGNORE INTO board_remotes (board_id, remote_url, is_primary)
                VALUES (?,?,?)""",
-            (board.id, url, primary),
+            (board.id, normalized, primary),
         )
 
 

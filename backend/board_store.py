@@ -1,13 +1,12 @@
-"""Board + Column persistence. One JSON file per board."""
+"""Board + Column persistence, in SQLite."""
 
 import fcntl
 import hashlib
-import json
 import re
-from pathlib import Path
 
+import db
 from models import Board, Column, Event, _now, _uid
-from paths import board_path, boards_dir, ensure_lock_path, events_path
+from paths import ensure_lock_path
 
 _SCP_LIKE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
 _URL_LIKE_RE = re.compile(r"^\w+://(?:[^@/]+@)?([^/]+)/(.+)$")
@@ -17,56 +16,67 @@ class ProjectRemoteConflictError(ValueError):
     pass
 
 
-def _read_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
-
-
-def _write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, default=str))
-
-
 def _append_event(board_id: str, event: Event) -> None:
-    p = events_path(board_id)
-    with open(p, "a") as f:
-        f.write(event.model_dump_json() + "\n")
+    event.board_id = event.board_id or board_id
+    with db.transaction() as conn:
+        db.write_event(conn, event)
 
 
-def _with_lock(board_id: str):
-    """Context manager: acquires a per-board file lock for the duration."""
-    lock_path = board_path(board_id).parent / f"{board_id}.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+def _columns_of(conn, board_id: str) -> list[Column]:
+    return [
+        Column(id=row["id"], board_id=row["board_id"], name=row["name"], position=row["position"])
+        for row in conn.execute(
+            "SELECT * FROM columns WHERE board_id=? ORDER BY position", (board_id,)
+        )
+    ]
+
+
+def _aliases_of(conn, board_id: str) -> list[str]:
+    return [
+        row["remote_url"]
+        for row in conn.execute(
+            "SELECT remote_url FROM board_remotes WHERE board_id=? AND is_primary=0"
+            " ORDER BY remote_url",
+            (board_id,),
+        )
+    ]
+
+
+def _acquire_remote_lock(normalized_remote_url: str):
+    """A lock keyed by one remote URL, held across operations that span more
+    than a single database transaction.
+
+    Board writes no longer need a lock -- the write transaction is the lock --
+    but consolidation prepares a manifest in one transaction and applies it in
+    another, and nothing may link that remote to a different board in between.
+    """
+    lock_path = ensure_lock_path(hashlib.sha256(normalized_remote_url.encode()).hexdigest()[:24])
     lock_file = open(lock_path, "w")
     fcntl.flock(lock_file, fcntl.LOCK_EX)
     return lock_file
 
 
-def _release_lock(lock_file):
+def _release_remote_lock(lock_file) -> None:
     fcntl.flock(lock_file, fcntl.LOCK_UN)
     lock_file.close()
+
+
+def _board_from(conn, row) -> Board:
+    return db.board_from_row(row, _columns_of(conn, row["id"]), _aliases_of(conn, row["id"]))
 
 
 # --- Boards ---
 
 def list_boards() -> list[Board]:
-    boards = []
-    for p in boards_dir().glob("*.json"):
-        if p.name.endswith("_cards.json") or p.name.endswith(".lock"):
-            continue
-        data = _read_json(p)
-        if data:
-            try:
-                boards.append(Board.model_validate(data))
-            except Exception:
-                pass
-    return sorted(boards, key=lambda b: b.updated_at, reverse=True)
+    conn = db.connect()
+    rows = conn.execute("SELECT * FROM boards ORDER BY updated_at DESC").fetchall()
+    return [_board_from(conn, row) for row in rows]
 
 
 def get_board(board_id: str) -> Board | None:
-    data = _read_json(board_path(board_id))
-    return Board.model_validate(data) if data else None
+    conn = db.connect()
+    row = conn.execute("SELECT * FROM boards WHERE id=?", (board_id,)).fetchone()
+    return _board_from(conn, row) if row else None
 
 
 def create_board(
@@ -81,8 +91,9 @@ def create_board(
     )
     for col in board.columns:
         col.board_id = board.id
-    _save_board(board)
-    _append_event(board.id, Event(type="board_created", detail=name))
+    with db.transaction() as conn:
+        _save_board(conn, board)
+        db.write_event(conn, Event(type="board_created", detail=name, board_id=board.id))
     return board
 
 
@@ -106,38 +117,31 @@ def normalize_remote_url(url: str) -> str:
 
 
 def get_board_by_remote_url(remote_url: str) -> Board | None:
+    """One indexed lookup. Every remote a board answers to -- its own plus each
+    alias -- is a row in board_remotes, so this never walks the board list."""
     normalized = normalize_remote_url(remote_url)
     if not normalized:
         return None
-    for board in list_boards():
-        project_remotes = [board.remote_url, *board.remote_aliases]
-        if any(normalize_remote_url(remote) == normalized for remote in project_remotes if remote):
-            return board
-    return None
-
-
-def _acquire_remote_lock(normalized_remote_url: str):
-    lock_path = ensure_lock_path(hashlib.sha256(normalized_remote_url.encode()).hexdigest()[:24])
-    lock_file = open(lock_path, "w")
-    fcntl.flock(lock_file, fcntl.LOCK_EX)
-    return lock_file
-
-
-def _release_remote_lock(lock_file) -> None:
-    fcntl.flock(lock_file, fcntl.LOCK_UN)
-    lock_file.close()
+    conn = db.connect()
+    row = conn.execute(
+        "SELECT board_id FROM board_remotes WHERE remote_url=?", (normalized,)
+    ).fetchone()
+    return get_board(row["board_id"]) if row else None
 
 
 def ensure_project_board(
     remote_url: str, name: str | None = None, description: str = "", column_names: list[str] | None = None,
 ) -> Board:
-    """Idempotent get-or-create keyed by normalized remote URL."""
+    """Idempotent get-or-create keyed by normalized remote URL.
+
+    The whole check-then-create runs in one write transaction, so two callers
+    racing on the same remote cannot both find nothing and both create a board.
+    """
     normalized = normalize_remote_url(remote_url)
     if not normalized:
         raise ValueError("remote_url is required")
 
-    lock_file = _acquire_remote_lock(normalized)
-    try:
+    with db.transaction():
         existing = get_board_by_remote_url(normalized)
         if existing:
             return existing
@@ -148,8 +152,6 @@ def ensure_project_board(
             column_names=column_names or ["Open Items", "In Progress", "In Testing", "Done"],
             remote_url=normalized,
         )
-    finally:
-        _release_remote_lock(lock_file)
 
 
 def link_project_remote(board_id: str, remote_url: str) -> Board | None:
@@ -157,36 +159,36 @@ def link_project_remote(board_id: str, remote_url: str) -> Board | None:
     if not normalized:
         raise ValueError("remote_url is required")
 
-    remote_lock = _acquire_remote_lock(normalized)
-    try:
+    with db.transaction() as conn:
         owner = get_board_by_remote_url(normalized)
         if owner:
             if owner.id != board_id:
                 raise ProjectRemoteConflictError("remote_url is already linked to another board")
             return owner
-
-        board_lock = _with_lock(board_id)
-        try:
-            board = get_board(board_id)
-            if not board:
-                return None
-            board.remote_aliases.append(normalized)
-            board.updated_at = _now()
-            _save_board(board)
-            return board
-        finally:
-            _release_lock(board_lock)
-    finally:
-        _release_remote_lock(remote_lock)
+        board = get_board(board_id)
+        if not board:
+            return None
+        conn.execute(
+            "INSERT INTO board_remotes (board_id, remote_url, is_primary) VALUES (?,?,0)",
+            (board_id, normalized),
+        )
+        board.remote_aliases.append(normalized)
+        board.updated_at = _now()
+        conn.execute(
+            "UPDATE boards SET updated_at=? WHERE id=?",
+            (board.updated_at.isoformat(), board_id),
+        )
+        return board
 
 
 def _update_board_under_lock(board_id: str, kwargs: dict) -> Board | None:
-    lock = _with_lock(board_id)
-    try:
+    with db.transaction() as conn:
         board = get_board(board_id)
         if not board:
             return None
         if "remote_url" in kwargs:
+            # The alias being promoted to the board's own remote stops being an
+            # alias, or the board would answer to it twice.
             board.remote_aliases = [
                 alias for alias in board.remote_aliases
                 if normalize_remote_url(alias) != kwargs["remote_url"]
@@ -195,10 +197,8 @@ def _update_board_under_lock(board_id: str, kwargs: dict) -> Board | None:
             if v is not None:
                 setattr(board, k, v)
         board.updated_at = _now()
-        _save_board(board)
+        _save_board(conn, board)
         return board
-    finally:
-        _release_lock(lock)
 
 
 def update_board(board_id: str, **kwargs) -> Board | None:
@@ -210,41 +210,29 @@ def update_board(board_id: str, **kwargs) -> Board | None:
         raise ValueError("remote_url is required")
     kwargs["remote_url"] = normalized
 
-    remote_lock = _acquire_remote_lock(normalized)
-    try:
+    with db.transaction():
         owner = get_board_by_remote_url(normalized)
         if owner and owner.id != board_id:
             raise ProjectRemoteConflictError("remote_url is already linked to another board")
         return _update_board_under_lock(board_id, kwargs)
-    finally:
-        _release_remote_lock(remote_lock)
 
 
 def delete_board(board_id: str) -> bool:
-    p = board_path(board_id)
-    if p.exists():
-        p.unlink()
-        ep = events_path(board_id)
-        if ep.exists():
-            ep.unlink()
-        cp = p.parent / f"{board_id}_cards.json"
-        if cp.exists():
-            cp.unlink()
-        qp = p.parent / f"{board_id}_open_questions.json"
-        if qp.exists():
-            qp.unlink()
-        lp = p.parent / f"{board_id}.lock"
-        if lp.exists():
-            lp.unlink()
+    with db.transaction() as conn:
+        cursor = conn.execute("DELETE FROM boards WHERE id=?", (board_id,))
+        if not cursor.rowcount:
+            return False
+        # Columns, cards and edges follow the board by foreign key. The journal
+        # deliberately has no key to the board -- it outlives cards -- so it is
+        # cleared here, matching the old delete of the board's events file.
+        conn.execute("DELETE FROM events WHERE board_id=?", (board_id,))
         return True
-    return False
 
 
 # --- Columns ---
 
 def add_column(board_id: str, name: str, position: int | None = None) -> Column | None:
-    lock = _with_lock(board_id)
-    try:
+    with db.transaction() as conn:
         board = get_board(board_id)
         if not board:
             return None
@@ -254,16 +242,13 @@ def add_column(board_id: str, name: str, position: int | None = None) -> Column 
         for i, c in enumerate(board.columns):
             c.position = i
         board.updated_at = _now()
-        _save_board(board)
-        _append_event(board_id, Event(type="column_added", detail=name))
+        _save_board(conn, board)
+        db.write_event(conn, Event(type="column_added", detail=name, board_id=board_id))
         return col
-    finally:
-        _release_lock(lock)
 
 
 def update_column(board_id: str, column_id: str, **kwargs) -> Column | None:
-    lock = _with_lock(board_id)
-    try:
+    with db.transaction() as conn:
         board = get_board(board_id)
         if not board:
             return None
@@ -280,15 +265,12 @@ def update_column(board_id: str, column_id: str, **kwargs) -> Column | None:
             for i, c in enumerate(board.columns):
                 c.position = i
         board.updated_at = _now()
-        _save_board(board)
+        _save_board(conn, board)
         return col
-    finally:
-        _release_lock(lock)
 
 
 def delete_column(board_id: str, column_id: str) -> bool:
-    lock = _with_lock(board_id)
-    try:
+    with db.transaction() as conn:
         board = get_board(board_id)
         if not board:
             return False
@@ -299,17 +281,48 @@ def delete_column(board_id: str, column_id: str) -> bool:
         for i, c in enumerate(board.columns):
             c.position = i
         board.updated_at = _now()
-        _save_board(board)
-        _append_event(board_id, Event(type="column_removed", detail=column_id))
-        # Delete orphaned cards that belonged to this column
-        from card_store import _read_cards, _write_cards
-        cards = _read_cards(board_id)
-        cards = [c for c in cards if c.column_id != column_id]
-        _write_cards(board_id, cards)
+        conn.execute("DELETE FROM columns WHERE id=?", (column_id,))
+        _save_board(conn, board)
+        db.write_event(conn, Event(type="column_removed", detail=column_id, board_id=board_id))
+        # Cards in a removed column go with it; they have nowhere to live.
+        conn.execute(
+            "DELETE FROM cards WHERE board_id=? AND column_id=?", (board_id, column_id)
+        )
         return True
-    finally:
-        _release_lock(lock)
 
 
-def _save_board(board: Board) -> None:
-    _write_json(board_path(board.id), board.model_dump(mode="json"))
+def _save_board(conn, board: Board) -> None:
+    conn.execute(
+        """INSERT INTO boards (id, name, description, remote_url, created_at, updated_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name, description=excluded.description,
+               remote_url=excluded.remote_url, updated_at=excluded.updated_at""",
+        (
+            board.id, board.name, board.description, board.remote_url,
+            board.created_at.isoformat(), board.updated_at.isoformat(),
+        ),
+    )
+    for column in board.columns:
+        conn.execute(
+            """INSERT INTO columns (id, board_id, name, position) VALUES (?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name, position=excluded.position""",
+            (column.id, board.id, column.name, column.position),
+        )
+    # The remote set is small and fully derived from the board, so it is
+    # rewritten rather than diffed -- it cannot drift that way. Rows are stored
+    # normalized: a board created with a raw `git@host:a/b.git` has to be found
+    # by a lookup for `host/a/b`, and normalizing on write is what makes that
+    # one index hit instead of a scan that normalizes every candidate.
+    conn.execute("DELETE FROM board_remotes WHERE board_id=?", (board.id,))
+    remotes = [(board.remote_url, 1)] if board.remote_url else []
+    remotes += [(alias, 0) for alias in board.remote_aliases]
+    for url, primary in remotes:
+        normalized = normalize_remote_url(url)
+        if not normalized:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO board_remotes (board_id, remote_url, is_primary)"
+            " VALUES (?,?,?)",
+            (board.id, normalized, primary),
+        )

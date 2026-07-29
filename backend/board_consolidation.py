@@ -10,8 +10,9 @@ import canvas_sync
 import card_history
 import card_store as cs
 import edge_store as es
+import db
 from models import Board, Card, Column, Edge, Event, _now
-from paths import board_path, edges_path, events_path, home
+from paths import home
 
 _ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _MANIFESTS_DIR = "consolidations"
@@ -43,10 +44,6 @@ def _manifest_path(source_board_id: str, target_board_id: str) -> Path:
     directory = home() / _MANIFESTS_DIR
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"{source_board_id}-{target_board_id}.json"
-
-
-def _cards_path(board_id: str) -> Path:
-    return board_path(board_id).parent / f"{board_id}_cards.json"
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -82,10 +79,6 @@ def _normalized_remotes(board: Board) -> set[str]:
 
 def _acquire_remote_locks(remotes: set[str]) -> list:
     return [bs._acquire_remote_lock(remote) for remote in sorted(remotes)]
-
-
-def _acquire_board_locks(board_ids: set[str]) -> list:
-    return [bs._with_lock(board_id) for board_id in sorted(board_ids)]
 
 
 def _release_locks(locks: list, release) -> None:
@@ -307,44 +300,54 @@ def _build_manifest(source: Board, target: Board) -> dict:
 
 
 def _apply_manifest(path: Path, manifest: dict) -> None:
+    """Land a prepared consolidation.
+
+    The manifest stays a durable write-ahead record on disk: it is what lets a
+    crash between preparing and applying be finished on the next startup rather
+    than leaving two half-merged boards. The apply itself is now one database
+    transaction, so the intermediate states the old file-by-file rewrite could
+    be interrupted in no longer exist.
+    """
     source_id = manifest["source_board_id"]
     target_id = manifest["target_board_id"]
-    _atomic_write_json(board_path(target_id), manifest["pre_alias_target"])
-    _atomic_write_json(_cards_path(target_id), manifest["cards"])
-    _atomic_write_json(edges_path(target_id), manifest["edges"])
-    _atomic_write(
-        events_path(target_id),
-        "".join(Event.model_validate(event).model_dump_json() + "\n" for event in manifest["events"]),
-    )
 
     syncs = canvas_sync._read_syncs()
     if any((syncs.get(board_id) or {}).get("enabled") for board_id in (source_id, target_id)):
         raise ConsolidationConflictError("board canvas sync must be disabled")
+
+    with db.transaction() as conn:
+        bs._save_board(conn, Board.model_validate(manifest["pre_alias_target"]))
+
+        # The target's cards, edges and journal are replaced wholesale by the
+        # merged set the manifest carries.
+        conn.execute("DELETE FROM cards WHERE board_id=?", (target_id,))
+        conn.execute("DELETE FROM edges WHERE board_id=?", (target_id,))
+        conn.execute("DELETE FROM events WHERE board_id=?", (target_id,))
+        for entry in manifest["cards"]:
+            db.write_card(conn, Card.model_validate(entry))
+        for entry in manifest["edges"]:
+            db.write_edge(conn, Edge.model_validate(entry))
+        for entry in manifest["events"]:
+            db.write_event(conn, Event.model_validate(entry))
+
+        # The source board goes; its cards and edges follow by foreign key.
+        conn.execute("DELETE FROM boards WHERE id=?", (source_id,))
+        conn.execute("DELETE FROM events WHERE board_id=?", (source_id,))
+
+        # Aliases are added last, so a crash before this point leaves the
+        # target not yet answering for the source's remotes and the manifest
+        # still pending -- recovery re-runs the whole apply.
+        bs._save_board(conn, Board.model_validate(manifest["final_target"]))
+
     syncs.pop(source_id, None)
     canvas_sync._write_syncs(syncs)
 
-    for source_path in (
-        board_path(source_id),
-        _cards_path(source_id),
-        edges_path(source_id),
-        events_path(source_id),
-    ):
-        if source_path.exists():
-            source_path.unlink()
-    for directory in {board_path(source_id).parent, events_path(source_id).parent}:
-        _fsync_directory(directory)
-
-    _atomic_write_json(board_path(target_id), manifest["final_target"])
     path.unlink(missing_ok=True)
     _fsync_directory(path.parent)
 
 
 def _apply_with_locks(path: Path, manifest: dict) -> Board:
     remote_locks = _acquire_remote_locks(set(manifest["remote_locks"]))
-    board_locks = _acquire_board_locks({
-        manifest["source_board_id"],
-        manifest["target_board_id"],
-    })
     canvas_lock = canvas_sync._acquire_sync_lock()
     try:
         _apply_manifest(path, manifest)
@@ -354,7 +357,6 @@ def _apply_with_locks(path: Path, manifest: dict) -> Board:
         return board
     finally:
         canvas_sync._release_sync_lock(canvas_lock)
-        _release_locks(board_locks, bs._release_lock)
         _release_locks(remote_locks, bs._release_remote_lock)
 
 
@@ -388,33 +390,34 @@ def consolidate_project_board(source_board_id: str, target_board_id: str) -> Boa
             raise KeyError("source or target board not found")
         expected_remotes |= _normalized_remotes(source) | _normalized_remotes(target)
         remote_locks = _acquire_remote_locks(expected_remotes)
-        board_locks = _acquire_board_locks({source_board_id, target_board_id})
         source = bs.get_board(source_board_id)
         target = bs.get_board(target_board_id)
         if source is None or target is None:
-            _release_locks(board_locks, bs._release_lock)
             _release_locks(remote_locks, bs._release_remote_lock)
             raise KeyError("source or target board not found")
         current_remotes = _normalized_remotes(source) | _normalized_remotes(target)
         if current_remotes <= expected_remotes:
             break
         expected_remotes |= current_remotes
-        _release_locks(board_locks, bs._release_lock)
         _release_locks(remote_locks, bs._release_remote_lock)
 
     canvas_lock = canvas_sync._acquire_sync_lock()
     try:
-        manifest = _build_manifest(source, target)
-        _atomic_write_json(existing_manifest, manifest)
-        try:
-            _apply_manifest(existing_manifest, manifest)
-        except Exception:
-            _apply_manifest(existing_manifest, manifest)
+        # Build and apply share one write transaction. They cannot be split:
+        # a card added to the source in between would be absent from the
+        # manifest and would then go with the source board, silently losing
+        # work. BEGIN IMMEDIATE holds every other writer off for the span.
+        with db.transaction():
+            manifest = _build_manifest(source, target)
+            _atomic_write_json(existing_manifest, manifest)
+            try:
+                _apply_manifest(existing_manifest, manifest)
+            except Exception:
+                _apply_manifest(existing_manifest, manifest)
         result = bs.get_board(target_board_id)
         if result is None:
             raise RuntimeError("consolidation target missing after apply")
         return result
     finally:
         canvas_sync._release_sync_lock(canvas_lock)
-        _release_locks(board_locks, bs._release_lock)
         _release_locks(remote_locks, bs._release_remote_lock)

@@ -346,12 +346,13 @@ class JsonMigrationTest(unittest.TestCase):
     def test_remote_url_and_aliases_both_resolve_to_the_board(self):
         self._write_legacy_board()
         db.migrate_json_if_needed()
-        conn = db.connect()
-        for url in ("git@example.com:x.git", "github.com/x"):
-            row = conn.execute(
-                "SELECT board_id FROM board_remotes WHERE remote_url=?", (url,)
-            ).fetchone()
-            self.assertEqual(row["board_id"], "board0000001")
+        import board_store
+        # Remotes are stored normalized, so either written form -- the scp-like
+        # remote_url or the already-normalized alias -- resolves to the board.
+        for url in ("git@example.com:x.git", "example.com/x", "github.com/x"):
+            self.assertEqual(
+                board_store.get_board_by_remote_url(url).id, "board0000001", url
+            )
 
     def test_migration_runs_once(self):
         self._write_legacy_board()

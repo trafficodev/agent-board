@@ -187,34 +187,6 @@ class CardVersioningTest(unittest.TestCase):
 
         self.assertIsNone(card_store.revert_card(self.board.id, card.id, RevertCard(version=1)))
 
-    def test_a_torn_final_line_does_not_hide_earlier_history(self):
-        card = self._card(body="kept")
-        with open(card_history.events_path(self.board.id), "a") as f:
-            f.write('{"type": "card_upda')
-
-        versions = card_history.card_versions(self.board.id, card.id)
-
-        self.assertEqual([v.snapshot["body"] for v in versions], ["kept"])
-
-    def test_a_corrupt_interior_record_is_raised_not_silently_skipped(self):
-        """Dropping an interior record renumbers every later version, which
-        would make a revert restore the wrong content."""
-        card = self._card(body="one")
-        card_store.update_card(self.board.id, card.id, UpdateCard(body="two"))
-        card_store.update_card(self.board.id, card.id, UpdateCard(body="three"))
-
-        path = card_history.events_path(self.board.id)
-        intact = path.read_text()
-        # Cross-board scans read every journal, so this one must not stay broken.
-        self.addCleanup(path.write_text, intact)
-        lines = intact.splitlines()
-        lines[1] = lines[1][: len(lines[1]) // 2]
-        path.write_text("\n".join(lines) + "\n")
-
-        with self.assertRaises(ValueError) as caught:
-            card_history.card_versions(self.board.id, card.id)
-        self.assertIn("corrupt journal record", str(caught.exception))
-
     def test_point_in_time_accepts_a_naive_timestamp(self):
         card = self._card(body="first")
         card_store.update_card(self.board.id, card.id, UpdateCard(body="second"))
