@@ -11,14 +11,17 @@ class ClientStartupTest(unittest.TestCase):
         self.original_base_url = client.BASE_URL
         self.original_attempts = client._STARTUP_ATTEMPTS
         self.original_process = client._process
+        self.original_ready_url = client._ready_url
         client.BASE_URL = "http://localhost:8123"
         client._STARTUP_ATTEMPTS = 2
         client._process = None
+        client._ready_url = ""
 
     def tearDown(self):
         client.BASE_URL = self.original_base_url
         client._STARTUP_ATTEMPTS = self.original_attempts
         client._process = self.original_process
+        client._ready_url = self.original_ready_url
 
     def test_reuses_healthy_server_without_starting_another(self):
         with patch.object(client, "_is_running", return_value=True), patch.object(
@@ -112,6 +115,26 @@ class ClientStartupTest(unittest.TestCase):
         process.terminate.assert_called_once_with()
         process.kill.assert_called_once_with()
         self.assertEqual(process.wait.call_count, 2)
+
+    def test_request_failure_invalidates_readiness_without_retry(self):
+        client._ready_url = client._normalized_base_url()
+
+        with patch.object(
+            client.urllib.request,
+            "urlopen",
+            side_effect=client.urllib.error.URLError("connection lost"),
+        ) as urlopen:
+            with self.assertRaisesRegex(client.AgentBoardUnavailableError, "connection lost"):
+                client.list_boards()
+
+        urlopen.assert_called_once()
+        self.assertEqual(client._ready_url, "")
+
+        with patch.object(client, "_is_running", return_value=True) as is_running:
+            client.ensure_server()
+
+        is_running.assert_called_once_with()
+        self.assertEqual(client._ready_url, client._normalized_base_url())
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import mcp_server
 from mcp_tools import GROUPS
@@ -16,6 +17,14 @@ class MCPServerTests(unittest.TestCase):
         app = mcp_server.build_app()
 
         self.assertEqual(app.name, "agent-board")
+
+    def test_concurrency_configuration_fails_closed(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"AGENT_BOARD_MCP_MAX_CONCURRENCY": "0"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "between 1 and 32"):
+                mcp_server.ToolDispatchOwner()
 
 
 if __name__ == "__main__":

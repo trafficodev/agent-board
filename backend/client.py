@@ -43,6 +43,7 @@ _SERVER_ENV_KEYS = (
 )
 
 _process: subprocess.Popen | None = None
+_ready_url = ""
 _start_lock = threading.Lock()
 
 
@@ -56,7 +57,10 @@ def _normalized_base_url() -> str:
 
 def _is_running() -> bool:
     try:
-        with urllib.request.urlopen(f"{_normalized_base_url()}/api/boards", timeout=2) as response:
+        with urllib.request.urlopen(
+            f"{_normalized_base_url()}/openapi.json",
+            timeout=2,
+        ) as response:
             return 200 <= int(getattr(response, "status", 200)) < 300
     except (OSError, ValueError, urllib.error.URLError):
         return False
@@ -112,12 +116,16 @@ def _stop_process(process: subprocess.Popen) -> None:
 
 
 def ensure_server() -> None:
-    global _process
-    if _is_running():
+    global _process, _ready_url
+    base_url = _normalized_base_url()
+    if _ready_url == base_url:
         return
 
     with _start_lock:
+        if _ready_url == base_url:
+            return
         if _is_running():
+            _ready_url = base_url
             return
 
         port = _local_server_port()
@@ -152,6 +160,7 @@ def ensure_server() -> None:
             if _is_running():
                 if process.poll() is not None and _process is process:
                     _process = None
+                _ready_url = base_url
                 return
             if process.poll() is not None:
                 break
@@ -161,11 +170,13 @@ def ensure_server() -> None:
         if _process is process:
             _process = None
         if _is_running():
+            _ready_url = base_url
             return
         raise AgentBoardUnavailableError(f"Agent Board backend failed to start at {BASE_URL}")
 
 
 def _req(method: str, path: str, body: dict | None = None) -> dict | list:
+    global _ready_url
     ensure_server()
     url = f"{_normalized_base_url()}{path}"
     data = json.dumps(body).encode() if body else None
@@ -188,6 +199,9 @@ def _req(method: str, path: str, body: dict | None = None) -> dict | list:
         detail = e.read().decode()
         raise RuntimeError(f"{e.code} {e.reason}: {detail}") from e
     except (OSError, ValueError, urllib.error.URLError) as exc:
+        with _start_lock:
+            if _ready_url == _normalized_base_url():
+                _ready_url = ""
         raise AgentBoardUnavailableError(f"Agent Board backend is unavailable at {BASE_URL}: {exc}") from exc
 
 
