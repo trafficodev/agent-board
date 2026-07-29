@@ -363,6 +363,28 @@ class JsonMigrationTest(unittest.TestCase):
             db.connect().execute("SELECT COUNT(*) FROM cards").fetchone()[0], 2
         )
 
+    def test_failed_import_rolls_back_every_board_and_completion_marker(self):
+        self._write_legacy_board()
+        board = json.loads((self.boards / "board0000001.json").read_text())
+        board["id"] = "board0000002"
+        board["columns"] = []
+        (self.boards / "board0000002.json").write_text(json.dumps(board))
+        (self.boards / "board0000002_cards.json").write_text(
+            json.dumps([{"id": "invalid"}])
+        )
+
+        with self.assertRaises(ValueError):
+            db.migrate_json_if_needed()
+
+        conn = db.connect()
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0], 0)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0], 0)
+        self.assertIsNone(
+            conn.execute(
+                "SELECT value FROM schema_meta WHERE key='json_migrated'"
+            ).fetchone()
+        )
+
     def test_sidecar_and_malformed_files_are_not_mistaken_for_boards(self):
         self._write_legacy_board()
         (self.boards / "board0000001_open_questions.json").write_text('{"questions": []}')
@@ -382,6 +404,16 @@ class JsonMigrationTest(unittest.TestCase):
     def test_nothing_to_migrate_is_not_an_error(self):
         result = db.migrate_json_if_needed()
         self.assertEqual(result["boards"], 0)
+        self.assertIsNone(
+            db.connect().execute(
+                "SELECT value FROM schema_meta WHERE key='json_migrated'"
+            ).fetchone()
+        )
+
+        self._write_legacy_board()
+        recovered = db.migrate_json_if_needed()
+        self.assertTrue(recovered["migrated"])
+        self.assertEqual(recovered["boards"], 1)
 
 
 if __name__ == "__main__":

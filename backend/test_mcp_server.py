@@ -1,5 +1,9 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
+
+os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-mcp-test-")
 
 import mcp_server
 from mcp_tools import GROUPS
@@ -14,9 +18,11 @@ class MCPServerTests(unittest.TestCase):
         self.assertEqual(len(owners), len(expected))
 
     def test_single_server_lists_every_group_tool(self) -> None:
-        app = mcp_server.build_app()
+        with patch.object(mcp_server.db, "initialize_storage") as initialize:
+            app = mcp_server.build_app()
 
         self.assertEqual(app.name, "agent-board")
+        initialize.assert_called_once_with()
 
     def test_concurrency_configuration_fails_closed(self) -> None:
         with patch.dict(

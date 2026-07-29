@@ -10,6 +10,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent
 
+import db
 from mcp_tools import GROUPS
 
 _DEFAULT_MAX_CONCURRENCY = 8
@@ -93,6 +94,7 @@ class ToolDispatchOwner:
 
 
 def build_app(owner: ToolDispatchOwner | None = None) -> Server:
+    db.initialize_storage()
     dispatch_owner = owner or ToolDispatchOwner()
     tools = [tool for group in GROUPS.values() for tool in group.TOOLS]
     app = Server("agent-board")

@@ -5,13 +5,14 @@ description: Use for Agent Board repo orientation before locating backend stores
 
 # Agent Board Project Structure
 
-Agent Board is a JSON-backed project board service with a Python backend/MCP surface and a Vite React frontend. Boards, cards, edges, events, and canvas projections are owned by backend stores; the frontend reflects API state.
+Agent Board is a SQLite-backed project board service with a Python backend/MCP surface and a Vite React frontend. Boards, cards, edges, events, and canvas projections are owned by backend stores; the frontend reflects API state. Legacy JSON is imported transactionally once at API or MCP startup.
 
 ## Routing
 
 - `backend/paths.py`: resolves `AGENT_BOARD_HOME` and storage roots.
+- `backend/db.py`: authoritative SQLite schema, connection/transaction owner, hydration, and legacy JSON import.
 - `backend/models.py`: shared board, card, edge, and event dataclasses.
-- `backend/board_store.py`, `backend/card_store.py`, `backend/edge_store.py`: authoritative JSON store owners.
+- `backend/board_store.py`, `backend/card_store.py`, `backend/edge_store.py`: domain persistence owners over SQLite.
 - `backend/card_bulk.py`, `backend/card_history.py`, `backend/card_diff.py`: card mutation/history helpers.
 - `backend/search_logic.py`: canonical card search, filtering, sorting, and AI-style ranked search behavior.
 - `backend/main.py`: FastAPI API surface for boards, cards, edges, search, and UI-serving routes.
@@ -32,7 +33,7 @@ Agent Board is a JSON-backed project board service with a Python backend/MCP sur
 
 ## Conventions
 
-- Treat backend stores as the source of truth for persisted board/card data.
+- Treat SQLite through the backend stores as the source of truth for persisted board/card data.
 - Keep frontend types aligned with backend models.
 - Keep board/card/canvas capabilities exposed consistently through MCP, CLI, SDK/client, and frontend surfaces when a manual UI equivalent exists.
 - Boards tied to a project use normalized `remote_url`; `board_store.ensure_project_board(remote_url)` is the idempotent get-or-create shared by every worktree/clone of the same repo.

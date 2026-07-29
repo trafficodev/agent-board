@@ -551,34 +551,56 @@ def migrate_json_if_needed() -> dict:
     The JSON files are not deleted: this is a one-way cutover and keeping the
     old documents costs nothing, but nothing reads them afterwards.
     """
-    conn = connect()
-    done = conn.execute(
-        "SELECT value FROM schema_meta WHERE key='json_migrated'"
-    ).fetchone()
-    if done:
-        return {"migrated": False, "reason": "already migrated"}
+    board_files = _json_boards()
+    with transaction() as tx:
+        done = tx.execute(
+            "SELECT value FROM schema_meta WHERE key='json_migrated'"
+        ).fetchone()
+        if done:
+            return {"migrated": False, "reason": "already migrated"}
+        if not board_files:
+            return {
+                "migrated": False,
+                "reason": "nothing to migrate",
+                "boards": 0,
+                "cards": 0,
+                "edges": 0,
+                "events": 0,
+            }
 
-    boards, cards, edges, events = 0, 0, 0, 0
-    for board_file in _json_boards():
-        try:
-            payload = json.loads(board_file.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict) or "id" not in payload:
-            continue
-        board = Board.model_validate(payload)
-        with transaction() as tx:
+        boards, cards, edges, events = 0, 0, 0, 0
+        for board_file in board_files:
+            try:
+                payload = json.loads(board_file.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or "id" not in payload:
+                continue
+            board = Board.model_validate(payload)
             _insert_board(tx, board)
             boards += 1
             cards += _migrate_cards(tx, board_file, board.id)
             edges += _migrate_edges(tx, board_file, board.id)
             events += _migrate_events(tx, board.id)
 
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('json_migrated', ?)",
-        (datetime.now(timezone.utc).isoformat(),),
-    )
+        if boards == 0:
+            return {
+                "migrated": False,
+                "reason": "nothing to migrate",
+                "boards": 0,
+                "cards": 0,
+                "edges": 0,
+                "events": 0,
+            }
+        tx.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('json_migrated', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
     return {"migrated": True, "boards": boards, "cards": cards, "edges": edges, "events": events}
+
+
+def initialize_storage() -> dict:
+    return migrate_json_if_needed()
 
 
 def _insert_board(conn: sqlite3.Connection, board: Board) -> None:
