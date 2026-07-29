@@ -2,6 +2,7 @@ import asyncio
 import fcntl
 import re
 import sys
+from contextlib import suppress
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Query
@@ -17,6 +18,7 @@ import card_history
 import card_store as cs
 import edge_store as es
 import search_logic
+import validation_worker
 from models import (
     AddNote,
     AddSession,
@@ -56,6 +58,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_validation_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def _start_validation_worker():
+    """Deterministic card checks run in the background for as long as the server
+    does. Off by env var for anyone who wants a quiet board."""
+    global _validation_task
+    if validation_worker.is_enabled():
+        _validation_task = asyncio.create_task(validation_worker.run_forever())
+
+
+@app.on_event("shutdown")
+async def _stop_validation_worker():
+    global _validation_task
+    if _validation_task:
+        _validation_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _validation_task
+        _validation_task = None
+
 
 # Attribution only: this server is shared, so the calling session travels in a
 # header and is bound to the request's context for the store to read. It is
@@ -461,6 +485,15 @@ def api_answer_note(board_id: str, card_id: str, note_id: str, body: AnswerNote)
         raise HTTPException(404, "Question not found or answer empty")
     _sync_board_if_enabled(board_id)
     return card
+
+
+@app.post("/api/boards/{board_id}/validate")
+def api_validate_board(board_id: str):
+    """Run the deterministic checks now instead of waiting for the interval."""
+    _board_or_404(board_id)
+    result = validation_worker.scan_and_apply(board_id)
+    _sync_board_if_enabled(board_id)
+    return result
 
 
 @app.get("/api/questions/open")
