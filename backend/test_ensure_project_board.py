@@ -50,6 +50,17 @@ class EnsureProjectBoardTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             board_store.ensure_project_board("")
 
+    def test_ensure_project_board_rejects_a_bare_token_instead_of_a_remote(self):
+        """Regression: a caller once passed another board's bare id where a
+        git remote_url was expected. normalize_remote_url silently accepted
+        it as a valid identity, so ensure_project_board kept finding and
+        reusing the resulting phantom board on every subsequent mistaken
+        call instead of failing loudly."""
+        self.assertEqual(board_store.normalize_remote_url("f247f3dde620"), "")
+        with self.assertRaisesRegex(ValueError, "remote_url is required"):
+            board_store.ensure_project_board("f247f3dde620")
+        self.assertEqual(board_store.list_boards(), [])
+
     def test_different_projects_get_different_boards(self):
         a = board_store.ensure_project_board("git@github.com:acme/widgets.git")
         b = board_store.ensure_project_board("git@github.com:acme/gadgets.git")

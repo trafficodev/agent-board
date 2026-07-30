@@ -108,7 +108,13 @@ def normalize_remote_url(url: str) -> str:
         return ""
     match = _SCP_LIKE_RE.match(url) or _URL_LIKE_RE.match(url)
     if not match:
-        return url.lower().rstrip("/")
+        candidate = url.lower().rstrip("/")
+        # A git remote always has host/path structure. A bare token (e.g. a
+        # board id passed here by mistake instead of an actual remote) has
+        # none, and would otherwise be silently accepted as its own project
+        # identity -- creating a phantom board that every future mistaken
+        # call keeps finding and reusing instead of failing loudly.
+        return candidate if "/" in candidate else ""
     host, path = match.group(1), match.group(2)
     path = path.strip("/")
     if path.endswith(".git"):

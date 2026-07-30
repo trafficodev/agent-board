@@ -88,7 +88,6 @@ def get_sync_status(board_id: str) -> dict[str, Any]:
 
 def enable_sync(board_id: str, canvas_api_url: str | None = None) -> dict[str, Any]:
     api_url = _validate_canvas_api_url(canvas_api_url or _configured_canvas_api_url())
-    board_lock = bs._with_lock(board_id)
     sync_lock = _acquire_sync_lock()
     try:
         syncs = _read_syncs()
@@ -102,12 +101,10 @@ def enable_sync(board_id: str, canvas_api_url: str | None = None) -> dict[str, A
         _write_syncs(syncs)
     finally:
         _release_sync_lock(sync_lock)
-        bs._release_lock(board_lock)
     return sync_board(board_id)
 
 
 def disable_sync(board_id: str) -> dict[str, Any]:
-    board_lock = bs._with_lock(board_id)
     sync_lock = _acquire_sync_lock()
     try:
         syncs = _read_syncs()
@@ -116,7 +113,6 @@ def disable_sync(board_id: str) -> dict[str, Any]:
         _write_syncs(syncs)
     finally:
         _release_sync_lock(sync_lock)
-        bs._release_lock(board_lock)
     return get_sync_status(board_id)
 
 
@@ -127,7 +123,6 @@ def sync_if_enabled(board_id: str) -> dict[str, Any] | None:
 
 
 def sync_board(board_id: str) -> dict[str, Any]:
-    board_lock = bs._with_lock(board_id)
     sync_lock = _acquire_sync_lock()
     try:
         syncs = _read_syncs()
@@ -162,16 +157,11 @@ def sync_board(board_id: str) -> dict[str, Any]:
         _write_syncs(syncs)
     finally:
         _release_sync_lock(sync_lock)
-        bs._release_lock(board_lock)
     return get_sync_status(board_id)
 
 
 def build_graph_payload(board_id: str) -> dict[str, Any]:
-    board_lock = bs._with_lock(board_id)
-    try:
-        return _build_graph_payload(bs.get_board(board_id), cs._read_cards(board_id))
-    finally:
-        bs._release_lock(board_lock)
+    return _build_graph_payload(bs.get_board(board_id), cs._read_cards(board_id))
 
 
 def _build_graph_payload(board, cards) -> dict[str, Any]:
