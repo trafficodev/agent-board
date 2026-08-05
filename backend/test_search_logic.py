@@ -218,6 +218,118 @@ class SearchLogicTest(unittest.TestCase):
         self.assertEqual(result["results"], [])
         self.assertEqual(result["error"], "empty_query")
 
+    def test_and_or_grouping_matches_any_branch(self):
+        cards = [
+            card("bug", labels=["bug"], priority="high"),
+            card("regression", labels=["regression"], priority="high"),
+            card("bug_low", labels=["bug"], priority="low"),
+            card("other", labels=["feature"], priority="high"),
+        ]
+
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "(label:bug OR label:regression) priority:high")),
+            ["bug", "regression"],
+        )
+
+    def test_nested_or_grouping(self):
+        cards = [
+            card("bug", labels=["bug"]),
+            card("regression", labels=["regression"]),
+            card("hotfix", labels=["hotfix"]),
+            card("other", labels=["feature"]),
+        ]
+
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "((label:bug OR label:regression) OR label:hotfix)")),
+            ["bug", "hotfix", "regression"],
+        )
+
+    def test_negated_group_excludes_any_branch_match(self):
+        cards = [
+            card("bug", labels=["bug"]),
+            card("regression", labels=["regression"]),
+            card("other", labels=["feature"]),
+        ]
+
+        self.assertEqual(
+            [item["id"] for item in search_cards(cards, COLUMNS, "-(label:bug OR label:regression)")],
+            ["other"],
+        )
+
+    def test_bare_or_outside_parens_is_literal_term_not_an_operator(self):
+        cards = [
+            card("all_three", title="foo or bar"),
+            card("foo_only", title="foo"),
+            card("bar_only", title="bar"),
+        ]
+
+        # No parens: "OR" is not an operator here, so this is an implicit AND
+        # of three literal terms ("foo", "or", "bar") — only a card
+        # containing all three substrings matches.
+        self.assertEqual(
+            [item["id"] for item in search_cards(cards, COLUMNS, "foo OR bar")],
+            ["all_three"],
+        )
+
+    def test_date_range_and_comparison_filters(self):
+        cards = [
+            card("jan", created_at="2026-01-15T00:00:00Z", updated_at="2026-01-15T00:00:00Z"),
+            card("feb", created_at="2026-02-15T00:00:00Z", updated_at="2026-02-15T00:00:00Z"),
+            card("mar", created_at="2026-03-15T00:00:00Z", updated_at="2026-03-15T00:00:00Z"),
+        ]
+
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "created:>2026-01-31")),
+            ["feb", "mar"],
+        )
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "updated:<2026-02-01")),
+            ["jan"],
+        )
+        # Inclusive range: both bounds themselves match.
+        self.assertEqual(
+            sorted(item["id"] for item in search_cards(cards, COLUMNS, "created:2026-01-15..2026-02-15")),
+            ["feb", "jan"],
+        )
+
+    def test_numeric_comparison_position_and_sessions(self):
+        cards = [
+            card("a", position=1, session_history=[{"session_id": "1"}, {"session_id": "2"}, {"session_id": "3"}, {"session_id": "4"}]),
+            card("b", position=10, session_history=[{"session_id": "1"}]),
+            card("c", position=3, session_history=[]),
+        ]
+
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "position:<5")], ["a", "c"])
+        self.assertEqual([item["id"] for item in search_cards(cards, COLUMNS, "sessions:>3")], ["a"])
+        # Negation composes with numeric comparison.
+        self.assertEqual(sorted(item["id"] for item in search_cards(cards, COLUMNS, "-sessions:>3")), ["b", "c"])
+
+    def test_regex_value_syntax_rejected_on_comparable_fields(self):
+        with self.assertRaises(ValueError):
+            parse_search_query("position:/1/")
+
+    def test_invalid_date_operand_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            parse_search_query("created:>not-a-date")
+
+    def test_combines_grouping_numeric_and_legacy_syntax_in_one_query(self):
+        cards = [
+            card("bug_many_sessions", labels=["bug"], session_history=[{"session_id": "1"}, {"session_id": "2"}]),
+            card("regression_many_sessions", labels=["regression"], session_history=[{"session_id": "1"}, {"session_id": "2"}]),
+            card("bug_one_session", labels=["bug"], session_history=[{"session_id": "1"}]),
+            card("bug_blocked_commit", labels=["bug"], session_history=[{"session_id": "1"}, {"session_id": "2"}], body='git_commits: ["abc1234 old"]'),
+        ]
+
+        self.assertEqual(
+            sorted(
+                item["id"]
+                for item in search_cards(
+                    cards, COLUMNS, "(label:bug OR label:regression) sessions:>1 -commit:abc1234",
+                )
+            ),
+            ["bug_many_sessions", "regression_many_sessions"],
+        )
+
     def test_sort_cards_supports_public_sort_modes(self):
         cards = [
             card("low", title="Zulu", position=0, priority="low", updated_at="2026-01-01T00:00:00Z", session_history=[]),

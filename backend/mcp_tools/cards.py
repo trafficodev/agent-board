@@ -23,12 +23,58 @@ TOOLS = [
     ),
     Tool(
         name="search_cards",
-        description="Search cards by text, quoted phrase, negation, fields, file, commit, rg-backed contains, session, priority, label, or hierarchy-visible matches",
+        description=(
+            "Exact/literal card search — 100% deterministic substring, field, regex, boolean, "
+            "date-range, and numeric-comparison matching. Zero fuzziness: it finds only what "
+            "literally appears (or a regex/range that literally matches), never a paraphrase or "
+            "synonym. Use ai_search_cards instead when you don't know the exact "
+            "field/value/wording. Returns matching cards plus their visible ancestors/descendants "
+            "in the card hierarchy. Every operator below composes with every other: negation, "
+            "field scoping, regex, grouping, and comparisons can all appear in the same query."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
                 "board_id": {"type": "string"},
-                "query": {"type": "string", "description": "Examples: file:frontend/src/App.tsx commit:abc1234 contains:renderSessionData has:file has:commit -label:bug"},
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Space-separated terms are implicit AND. Operators:\n"
+                        "- Plain text: `login bug` — substring match (case-insensitive) anywhere on the card.\n"
+                        "- \"quoted phrase\": `\"login bug\"` — keeps spaces inside one term instead of splitting on them.\n"
+                        "- -negation: `-label:bug` or bare `-urgent` — term must NOT match.\n"
+                        "- field:value — scope to one field. Fields: title, body, label (alias: labels/type), "
+                        "priority, column, id, external_id (alias: external), metadata, session, edge, edge_type, "
+                        "file (alias: files/edited_file/edited_files), commit (alias: commits/git_commit/"
+                        "git_commits), worktree (alias: worktrees/worktree_path/worktree_paths). "
+                        "Example: `file:frontend/src/App.tsx commit:abc1234 priority:high`.\n"
+                        "- /regex/flags — literal regex on any field or unscoped, e.g. `title:/^Fix.*bug$/i`, "
+                        "`/TODO|FIXME/`. Only `i` (case-insensitive) flag is supported. Quote the value if the "
+                        "pattern itself contains a space or parenthesis, e.g. `contains:\"/foo(bar) baz/\"` — "
+                        "unquoted parens are always parsed as grouping syntax (see below).\n"
+                        "- contains:value — rg-backed: also greps the actual contents of every file this card "
+                        "references (via edited_files/projects metadata), not just card text. Supports regex too: "
+                        "`contains:/render\\w+Data/`.\n"
+                        "- has:field — card has any value for file/commit/worktree/session/edge, "
+                        "e.g. `has:file`, `has:commit`.\n"
+                        "- (a OR b) — explicit OR grouping, only recognized INSIDE parentheses; can nest, e.g. "
+                        "`(label:bug OR (label:regression OR label:hotfix)) priority:high`. Terms and groups at "
+                        "the top level (and within a group) are always implicit AND. A bare OR with no "
+                        "parentheses is NOT an operator — it is parsed as a literal word, e.g. `foo OR bar` "
+                        "requires the literal substrings \"foo\", \"or\", AND \"bar\" all present. A group can be "
+                        "negated: `-(label:bug OR label:regression)`.\n"
+                        "- Date range/comparison on `created` or `updated` (compares created_at/updated_at): "
+                        "`created:>2026-01-01`, `updated:<2026-06-01`, `created:>=2026-01-01`, "
+                        "`created:2026-01-01..2026-02-01` (inclusive range, both bounds match). Bare date with no "
+                        "operator means exact equality.\n"
+                        "- Numeric comparison on `position` or `sessions` (session_history count): "
+                        "`sessions:>3`, `position:<5`, `position:>=2`. Regex syntax is rejected on "
+                        "created/updated/position/sessions (parse_search_query raises ValueError) — comparisons "
+                        "and regex don't mix.\n"
+                        "Combined example: `(label:bug OR label:regression) sessions:>1 -commit:abc1234 "
+                        "created:>2026-01-01`."
+                    ),
+                },
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "label": {"type": "string"},
                 "sort": {"type": "string", "enum": ["board", "updated_desc", "created_desc", "priority_desc", "title_asc", "sessions_desc"]},
@@ -38,7 +84,13 @@ TOOLS = [
     ),
     Tool(
         name="ai_search_cards",
-        description="Run ranked card search and return matching cards with reasoning and an error field",
+        description=(
+            "Semantic/natural-language card search, powered by an LLM (mirrors the sessions-list AI "
+            "search). Understands intent, synonyms, and paraphrase — it does NOT require the query "
+            "words to appear literally in the card. Returns ranked matching cards plus the model's "
+            "reasoning and an error field. Use this over search_cards when you don't know the exact "
+            "field/value/wording to filter on; use search_cards for exact text/field/regex matches."
+        ),
         inputSchema={
             "type": "object",
             "properties": {

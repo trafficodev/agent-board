@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import operator
 import re
 import json
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 FIELD_ALIASES = {
@@ -46,11 +48,76 @@ _PRIORITY_RANK = {
 
 
 @dataclass(frozen=True)
+class Comparison:
+    """One bound of a numeric/date comparison, e.g. `>` against a parsed
+    epoch-seconds (date fields) or plain float (numeric fields) threshold."""
+    op: str  # one of _COMPARATOR_OPS keys: ">", "<", ">=", "<=", "="
+    value: float
+
+
+@dataclass(frozen=True)
 class SearchTerm:
     negative: bool
     field: str | None
     value: str
     regex: "re.Pattern | None" = None
+    comparisons: "tuple[Comparison, ...]" = ()
+
+
+@dataclass(frozen=True)
+class OrGroup:
+    """A parenthesized group: `(a OR b OR c)`. Matches if ANY branch matches.
+    Each branch is an AND'd sequence of SearchNode (term or nested group),
+    mirroring the semantics of the top-level query itself."""
+    negative: bool
+    branches: "tuple[tuple[SearchNode, ...], ...]"
+
+
+# A query is an AND'd sequence of nodes; a node is either a leaf term or a
+# parenthesized OR-group of further AND'd sequences. Recursion bottoms out at
+# SearchTerm leaves, which `_matches_term` evaluates unchanged.
+SearchNode = SearchTerm | OrGroup
+
+
+def _parse_date_value(raw: str) -> float:
+    """Parses an ISO date/datetime into epoch seconds. A value with no
+    timezone (e.g. a bare `2026-01-01` operand typed into a query, as
+    opposed to a stored `...Z` card timestamp) is treated as UTC — the two
+    must compare consistently regardless of the host's local timezone."""
+    normalized = raw.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+_KIND_PARSERS: dict[str, Callable[[str], float]] = {
+    "date": _parse_date_value,
+    "number": float,
+}
+
+# Single-source-of-truth registration for comparable fields: (kind, getter).
+# `kind` selects the parser above for both the query operand and the card's
+# actual value; adding another comparable field is one new entry here.
+_COMPARABLE_FIELDS: dict[str, tuple[str, Callable[[dict[str, Any]], "float | None"]]] = {
+    "created": ("date", lambda card: _parse_date_value(str(card["created_at"])) if card.get("created_at") else None),
+    "updated": ("date", lambda card: _parse_date_value(str(card["updated_at"])) if card.get("updated_at") else None),
+    "position": ("number", lambda card: float(card["position"]) if card.get("position") is not None else None),
+    "sessions": ("number", lambda card: float(len(card.get("session_history") or []))),
+}
+
+_COMPARATOR_OPS: dict[str, Callable[[float, float], bool]] = {
+    ">": operator.gt,
+    "<": operator.lt,
+    ">=": operator.ge,
+    "<=": operator.le,
+    "=": operator.eq,
+}
+
+# Longest-prefix-first: ">=" must be checked before ">" or its operand would
+# wrongly start with "=".
+_COMPARATOR_PREFIXES = (">=", "<=", ">", "<", "=")
+_RANGE_SEP = ".."
 
 
 def search_cards(
@@ -124,76 +191,195 @@ def ai_search_cards(
 _REGEX_VALUE_RE = re.compile(r"^/(.+)/([a-zA-Z]*)$")
 
 
-def parse_search_query(query: str) -> list[SearchTerm]:
+def parse_search_query(query: str) -> list[SearchNode]:
     """Grep-style `/pattern/flags` value syntax works on any field, including
     the unscoped (search-everything) case and `contains:` — e.g.
     `title:/^Fix.*bug$/i`, `/TODO|FIXME/`, `contains:/error: \\d+/`. Every
-    other value is still a plain case-insensitive substring match, unchanged."""
-    terms: list[SearchTerm] = []
-    for raw_token in _tokenize(query):
-        token = raw_token.strip()
-        negative = token.startswith("-") and len(token) > 1
-        if negative:
-            token = token[1:]
+    other value is still a plain case-insensitive substring match, unchanged.
 
-        field = None
-        value = token
-        colon_index = token.find(":")
-        if colon_index > 0:
-            raw_field = _normalize(token[:colon_index])
-            field = FIELD_ALIASES.get(raw_field, raw_field)
-            value = token[colon_index + 1:]
+    Grouping: `(a OR b)` — OR is only recognized strictly inside parens;
+    implicit AND joins top-level terms/groups and terms within a group.
+    A bare `OR` token outside any parens is NOT an operator — it parses as
+    an ordinary literal term (documented, deliberate: no precedence guessing
+    without explicit grouping). Parens are structural only when unquoted;
+    quote a value that needs a literal `(`/`)` (or a regex containing one).
 
-        regex_match = _REGEX_VALUE_RE.match(value)
-        if regex_match:
-            pattern, flags = regex_match.groups()
-            re_flags = re.IGNORECASE if "i" in flags.lower() else 0
-            try:
-                compiled = re.compile(pattern, re_flags)
-            except re.error as exc:
-                raise ValueError(f"invalid regex /{pattern}/: {exc}") from exc
-            terms.append(SearchTerm(negative=negative, field=field, value=pattern, regex=compiled))
-            continue
+    Date/numeric comparisons on registered fields (`created`, `updated`,
+    `position`, `sessions`): `field:>value`, `field:<value`, `field:>=value`,
+    `field:<=value`, `field:a..b` (inclusive range), or a bare `field:value`
+    for equality. Regex value syntax is rejected on these fields.
 
-        normalized = _normalize(value)
-        if normalized:
-            terms.append(SearchTerm(negative=negative, field=field, value=normalized))
-    return terms
+    In the simple case (no grouping), the returned list is exactly the flat
+    `list[SearchTerm]` this function has always returned.
+    """
+    tokens = _tokenize(query)
+    nodes, _ = _parse_and_sequence(tokens, 0, in_group=False)
+    return nodes
 
 
 def _tokenize(query: str) -> list[str]:
     tokens: list[str] = []
-    current = []
+    current: list[str] = []
     quoted = False
+
+    def flush() -> None:
+        if current:
+            tokens.append("".join(current))
+            current.clear()
 
     for char in query.strip():
         if char == '"':
             quoted = not quoted
             continue
         if char.isspace() and not quoted:
-            if current:
-                tokens.append("".join(current))
-                current = []
+            flush()
+            continue
+        if char in "()" and not quoted:
+            flush()
+            tokens.append(char)
             continue
         current.append(char)
 
-    if current:
-        tokens.append("".join(current))
+    flush()
     return tokens
 
 
+def _parse_and_sequence(tokens: list[str], index: int, *, in_group: bool) -> tuple[list[SearchNode], int]:
+    """Parses an implicit-AND run of factors. Inside a group, stops at `)` or
+    an `OR` token (leaving them for the caller); at the top level neither is
+    special, so a stray `)` is dropped and a bare `OR` is parsed as a term."""
+    nodes: list[SearchNode] = []
+    while index < len(tokens):
+        token = tokens[index]
+        if in_group and (token == ")" or token.upper() == "OR"):
+            break
+        node, index = _parse_factor(tokens, index, in_group=in_group)
+        if node is not None:
+            nodes.append(node)
+    return nodes, index
+
+
+def _parse_or_group(tokens: list[str], index: int) -> tuple[tuple[tuple[SearchNode, ...], ...], int]:
+    """Parses OR-separated AND-sequences until `)` or end of tokens."""
+    branches: list[tuple[SearchNode, ...]] = []
+    nodes, index = _parse_and_sequence(tokens, index, in_group=True)
+    branches.append(tuple(nodes))
+    while index < len(tokens) and tokens[index].upper() == "OR":
+        index += 1
+        nodes, index = _parse_and_sequence(tokens, index, in_group=True)
+        branches.append(tuple(nodes))
+    return tuple(branches), index
+
+
+def _parse_factor(tokens: list[str], index: int, *, in_group: bool) -> tuple["SearchNode | None", int]:
+    token = tokens[index]
+    negative = token == "-"
+    if negative:
+        index += 1
+        if index >= len(tokens):
+            return None, index
+        token = tokens[index]
+
+    if token == "(":
+        index += 1
+        branches, index = _parse_or_group(tokens, index)
+        if index < len(tokens) and tokens[index] == ")":
+            index += 1
+        return OrGroup(negative=negative, branches=branches), index
+
+    if token == ")":
+        # Stray close-paren with no opener (only reachable at the top level,
+        # since `_parse_and_sequence` intercepts it inside a group): drop it.
+        return None, index + 1
+
+    return _parse_term_token(token, negative), index + 1
+
+
+def _parse_term_token(token: str, negative: bool) -> "SearchTerm | None":
+    if token.startswith("-") and len(token) > 1:
+        negative = True
+        token = token[1:]
+
+    field = None
+    value = token
+    colon_index = token.find(":")
+    if colon_index > 0:
+        raw_field = _normalize(token[:colon_index])
+        field = FIELD_ALIASES.get(raw_field, raw_field)
+        value = token[colon_index + 1:]
+
+    if field in _COMPARABLE_FIELDS:
+        return _parse_comparable_term(field, value, negative)
+
+    regex_match = _REGEX_VALUE_RE.match(value)
+    if regex_match:
+        pattern, flags = regex_match.groups()
+        re_flags = re.IGNORECASE if "i" in flags.lower() else 0
+        try:
+            compiled = re.compile(pattern, re_flags)
+        except re.error as exc:
+            raise ValueError(f"invalid regex /{pattern}/: {exc}") from exc
+        return SearchTerm(negative=negative, field=field, value=pattern, regex=compiled)
+
+    normalized = _normalize(value)
+    if not normalized:
+        return None
+    return SearchTerm(negative=negative, field=field, value=normalized)
+
+
+def _parse_comparable_term(field: str, value: str, negative: bool) -> SearchTerm:
+    if _REGEX_VALUE_RE.match(value):
+        raise ValueError(f"regex value syntax is not supported on comparable field '{field}': {value!r}")
+
+    _kind, _getter = _COMPARABLE_FIELDS[field]
+    parse_operand = _KIND_PARSERS[_kind]
+
+    if _RANGE_SEP in value:
+        start, _, end = value.partition(_RANGE_SEP)
+        comparisons = (
+            Comparison(">=", parse_operand(start)),
+            Comparison("<=", parse_operand(end)),
+        )
+        return SearchTerm(negative=negative, field=field, value=value, comparisons=comparisons)
+
+    for prefix in _COMPARATOR_PREFIXES:
+        if value.startswith(prefix):
+            operand = value[len(prefix):]
+            comparisons = (Comparison(prefix, parse_operand(operand)),)
+            return SearchTerm(negative=negative, field=field, value=value, comparisons=comparisons)
+
+    comparisons = (Comparison("=", parse_operand(value)),)
+    return SearchTerm(negative=negative, field=field, value=value, comparisons=comparisons)
+
+
 def _matches_query(
-    card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str],
+    card: dict[str, Any], nodes: "list[SearchNode] | tuple[SearchNode, ...]", column_names_by_id: dict[str, str],
     rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool],
     edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
 ) -> bool:
-    for term in terms:
-        matched = _matches_term(card, term, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
-        if term.negative and matched:
+    """AND-matches a sequence of nodes. Used both for the top-level query and,
+    recursively, for each AND'd branch inside an `OrGroup` (see
+    `_evaluate_node`) — the semantics are identical either way."""
+    for node in nodes:
+        matched = _evaluate_node(card, node, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
+        if node.negative and matched:
             return False
-        if not term.negative and not matched:
+        if not node.negative and not matched:
             return False
     return True
+
+
+def _evaluate_node(
+    card: dict[str, Any], node: SearchNode, column_names_by_id: dict[str, str],
+    rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> bool:
+    if isinstance(node, OrGroup):
+        return any(
+            _matches_query(card, branch, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
+            for branch in node.branches
+        )
+    return _matches_term(card, node, column_names_by_id, rg_cache, edges_by_card, cards_by_id)
 
 
 def _group_edges_by_card(edges: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -209,6 +395,8 @@ def _matches_term(
     rg_cache: dict[tuple[str, bool, tuple[str, ...]], bool],
     edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
 ) -> bool:
+    if term.comparisons:
+        return _matches_comparison(card, term)
     if term.field == "has":
         return _matches_has(card, term.value, edges_by_card)
     if term.field in _TRACKED_LIST_FIELDS:
@@ -221,18 +409,35 @@ def _matches_term(
     return any(term.value in _normalize(value) for value in values)
 
 
+def _matches_comparison(card: dict[str, Any], term: SearchTerm) -> bool:
+    _kind, getter = _COMPARABLE_FIELDS[term.field]
+    actual = getter(card)
+    if actual is None:
+        return False
+    return all(_COMPARATOR_OPS[comparison.op](actual, comparison.value) for comparison in term.comparisons)
+
+
 def _ai_relevance_score(
-    card: dict[str, Any], terms: list[SearchTerm], column_names_by_id: dict[str, str],
+    card: dict[str, Any], nodes: list[SearchNode], column_names_by_id: dict[str, str],
     edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
 ) -> int:
     score = 0
-    for term in terms:
-        if term.negative:
-            if _matches_term(card, term, column_names_by_id, {}, edges_by_card, cards_by_id):
+    for node in nodes:
+        if node.negative:
+            if _evaluate_node(card, node, column_names_by_id, {}, edges_by_card, cards_by_id):
                 return 0
             continue
-        score += _weighted_term_score(card, term, column_names_by_id, edges_by_card, cards_by_id)
+        score += _weighted_node_score(card, node, column_names_by_id, edges_by_card, cards_by_id)
     return score
+
+
+def _weighted_node_score(
+    card: dict[str, Any], node: SearchNode, column_names_by_id: dict[str, str],
+    edges_by_card: dict[str, list[dict[str, Any]]], cards_by_id: dict[str, dict[str, Any]],
+) -> int:
+    if isinstance(node, OrGroup):
+        return 8 if _evaluate_node(card, node, column_names_by_id, {}, edges_by_card, cards_by_id) else 0
+    return _weighted_term_score(card, node, column_names_by_id, edges_by_card, cards_by_id)
 
 
 def _weighted_term_score(
@@ -524,10 +729,7 @@ def _reverse_timestamp(value: Any) -> float:
     if not value:
         return 0
     try:
-        from datetime import datetime
-
-        normalized = str(value).replace("Z", "+00:00")
-        return -datetime.fromisoformat(normalized).timestamp()
+        return -_parse_date_value(str(value))
     except ValueError:
         return 0
 
