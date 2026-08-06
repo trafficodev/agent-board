@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from search_logic import ai_search_cards, parse_search_query, search_cards, sort_cards
+from search_logic import parse_search_query, relevant_candidates, search_cards, sort_cards
 
 
 def edge(edge_id, from_card_id, to_card_id, **overrides):
@@ -198,24 +198,48 @@ class SearchLogicTest(unittest.TestCase):
         )
         self.assertEqual(search_cards(cards, COLUMNS, "has:edge"), [])
 
-    def test_ai_search_ranks_matches_and_returns_reasoning(self):
+    def test_relevant_candidates_returns_a_ranked_compact_shortlist(self):
+        """A generic keyword-relevance shortlist: a compact candidate
+        projection (not full cards), ordered by the same keyword scoring
+        `search_cards` uses."""
         cards = [
-            card("body", body="Fix the login search panel"),
+            card("body", body="Fix the login search panel", labels=["ui"], priority="high"),
             card("title", title="Login search ranking"),
             card("label", labels=["login"]),
             card("miss", title="Unrelated"),
         ]
 
-        result = ai_search_cards(cards, COLUMNS, "login")
+        result = relevant_candidates(cards, COLUMNS, "login")
 
         self.assertIsNone(result["error"])
-        self.assertEqual([item["id"] for item in result["results"]], ["title", "label", "body"])
-        self.assertIn("Ranked", result["reasoning"])
+        self.assertEqual([item["id"] for item in result["candidates"]], ["title", "label", "body"])
+        body_candidate = result["candidates"][2]
+        self.assertEqual(body_candidate["title"], "")
+        self.assertEqual(body_candidate["body_snippet"], "Fix the login search panel")
+        self.assertEqual(body_candidate["labels"], ["ui"])
+        self.assertEqual(body_candidate["priority"], "high")
+        self.assertEqual(body_candidate["column"], "Features")
 
-    def test_ai_search_rejects_empty_query(self):
-        result = ai_search_cards([card("a")], COLUMNS, "  ")
+    def test_relevant_candidates_caps_the_shortlist(self):
+        cards = [card(f"c{i}", title="login") for i in range(50)]
 
-        self.assertEqual(result["results"], [])
+        result = relevant_candidates(cards, COLUMNS, "login", max_candidates=5)
+
+        self.assertEqual(len(result["candidates"]), 5)
+
+    def test_relevant_candidates_truncates_long_body_snippets(self):
+        cards = [card("a", body="x" * 500)]
+
+        result = relevant_candidates(cards, COLUMNS, "x")
+
+        snippet = result["candidates"][0]["body_snippet"]
+        self.assertEqual(len(snippet), 241)  # 240 chars + the truncation marker
+        self.assertTrue(snippet.endswith("…"))
+
+    def test_relevant_candidates_rejects_empty_query(self):
+        result = relevant_candidates([card("a")], COLUMNS, "  ")
+
+        self.assertEqual(result["candidates"], [])
         self.assertEqual(result["error"], "empty_query")
 
     def test_and_or_grouping_matches_any_branch(self):

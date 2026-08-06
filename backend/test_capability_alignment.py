@@ -23,7 +23,6 @@ UI_CAPABILITIES = {
     "delete_column",
     "list_cards",
     "search_cards",
-    "ai_search_cards",
     "create_card",
     "bulk_cards",
     "get_card",

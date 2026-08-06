@@ -367,27 +367,31 @@ def api_search_cards(board_id: str, query: str = "", priority: str | None = None
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.get("/api/boards/{board_id}/cards/ai-search")
-def api_ai_search_cards(
+@app.get("/api/boards/{board_id}/cards/relevant-candidates")
+def api_relevant_candidates(
     board_id: str,
     query: str = "",
     priority: str | None = None,
     label: str | None = None,
-    max_results: int = Query(12, ge=1, le=50),
+    max_candidates: int = Query(search_logic._SHORTLIST_CAP, ge=1, le=50),
 ):
+    """Keyword-relevance shortlist only -- a building block for semantic/AI
+    ranking, not itself a semantic ranker (agent-board has no AI provider).
+    Callers who want AI ranking send this compact candidate list to a
+    model themselves."""
     board = _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
     edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
     try:
-        return search_logic.ai_search_cards(
+        return search_logic.relevant_candidates(
             cards,
             columns,
             query=query,
             priority=priority,
             label=label,
             edges=edges,
-            max_results=max_results,
+            max_candidates=max_candidates,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

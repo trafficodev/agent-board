@@ -156,14 +156,25 @@ def sort_cards(cards: list[dict[str, Any]], sort: str = "board") -> list[dict[st
     return sorted(cards, key=lambda card: _sort_key(card, sort))
 
 
-def ai_search_cards(
+_SHORTLIST_CAP = 40
+_BODY_SNIPPET_CHARS = 240
+
+
+def relevant_candidates(
     cards: list[dict[str, Any]], columns: list[dict[str, Any]], query: str,
     priority: str | None = None, label: str | None = None, edges: list[dict[str, Any]] | None = None,
-    max_results: int = 12,
+    max_candidates: int = _SHORTLIST_CAP,
 ) -> dict[str, Any]:
+    """Keyword-relevance shortlist: the top-N cards for a query, in a
+    COMPACT projection (id/title/body-snippet/labels/priority/column),
+    capped at `max_candidates`. Uses the same weighted keyword-relevance
+    scoring `search_cards` is built on. This is a building block for
+    semantic/AI ranking (an embedder sends this shortlist to a model, since
+    agent-board itself has no AI provider) -- it is not itself a semantic
+    ranker and returns candidates, not full cards."""
     terms = parse_search_query(query)
     if not terms:
-        return {"results": [], "reasoning": "", "error": "empty_query"}
+        return {"candidates": [], "error": "empty_query"}
 
     column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
     cards_by_id = {card["id"]: card for card in cards}
@@ -180,11 +191,23 @@ def ai_search_cards(
             ranked.append((score, card))
 
     ranked.sort(key=lambda item: (-item[0], _card_sort_key(item[1])))
-    results = [card for _score, card in ranked[:max_results]]
+    candidates = [
+        _shortlist_candidate(card, column_names_by_id)
+        for _score, card in ranked[:max_candidates]
+    ]
+    return {"candidates": candidates, "error": None}
+
+
+def _shortlist_candidate(card: dict[str, Any], column_names_by_id: dict[str, str]) -> dict[str, Any]:
+    body = str(card.get("body") or "")
+    snippet = body[:_BODY_SNIPPET_CHARS] + ("…" if len(body) > _BODY_SNIPPET_CHARS else "")
     return {
-        "results": results,
-        "reasoning": _ai_reasoning(query, len(ranked), len(results)),
-        "error": None,
+        "id": card.get("id", ""),
+        "title": card.get("title", ""),
+        "body_snippet": snippet,
+        "labels": list(card.get("labels", []) or []),
+        "priority": card.get("priority", ""),
+        "column": column_names_by_id.get(card.get("column_id"), card.get("column_id", "")),
     }
 
 
@@ -469,14 +492,6 @@ def _weighted_term_score(
         if matched:
             total += weight
     return total
-
-
-def _ai_reasoning(query: str, matched: int, returned: int) -> str:
-    if matched == 0:
-        return f"No cards matched \"{query.strip()}\"."
-    if matched == returned:
-        return f"Ranked {returned} cards by title, labels, body, metadata, sessions, and edges."
-    return f"Ranked {matched} matching cards and returned the top {returned}."
 
 
 def _search_values(

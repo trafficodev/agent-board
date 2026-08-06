@@ -308,15 +308,14 @@ def search_cards(
     return _req("GET", path)
 
 
-def ai_search_cards(
-    board_id: str, query: str, priority: str | None = None, label: str | None = None, max_results: int | None = None,
-) -> dict:
-    params = urllib.parse.urlencode({
-        k: v
-        for k, v in {"query": query, "priority": priority, "label": label, "max_results": max_results}.items()
-        if v is not None and v != ""
-    })
-    path = f"/api/boards/{board_id}/cards/ai-search"
+def relevant_candidates(board_id: str, query: str, priority: str | None = None, label: str | None = None) -> dict:
+    """Keyword-relevance shortlist (see `search_logic.relevant_candidates`):
+    a compact top-N candidate projection, not full cards. A building block
+    for semantic/AI ranking -- agent-board has no AI provider of its own,
+    so it is not itself a semantic search. Returns `{"candidates": [...],
+    "error"}`; `error` is `None` or `"empty_query"`."""
+    params = urllib.parse.urlencode({k: v for k, v in {"query": query, "priority": priority, "label": label}.items() if v})
+    path = f"/api/boards/{board_id}/cards/relevant-candidates"
     if params:
         path += f"?{params}"
     return _req("GET", path)

@@ -137,22 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
 
-    ai_search_cards = sub.add_parser("ai_search_cards")
-    ai_search_cards.add_argument("board_id")
-    ai_search_cards.add_argument("query")
-    ai_search_cards.add_argument("--priority")
-    ai_search_cards.add_argument("--label")
-    ai_search_cards.add_argument("--max-results", type=int)
-    ai_search_cards.set_defaults(
-        func=lambda args: client.ai_search_cards(
-            args.board_id,
-            args.query,
-            priority=args.priority,
-            label=args.label,
-            max_results=args.max_results,
-        )
-    )
-
     create_card = sub.add_parser("create_card")
     create_card.add_argument("board_id")
     create_card.add_argument("title")

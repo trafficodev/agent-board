@@ -27,8 +27,7 @@ TOOLS = [
             "Exact/literal card search — 100% deterministic substring, field, regex, boolean, "
             "date-range, and numeric-comparison matching. Zero fuzziness: it finds only what "
             "literally appears (or a regex/range that literally matches), never a paraphrase or "
-            "synonym. Use ai_search_cards instead when you don't know the exact "
-            "field/value/wording. Returns matching cards plus their visible ancestors/descendants "
+            "synonym. Returns matching cards plus their visible ancestors/descendants "
             "in the card hierarchy. Every operator below composes with every other: negation, "
             "field scoping, regex, grouping, and comparisons can all appear in the same query."
         ),
@@ -80,27 +79,6 @@ TOOLS = [
                 "sort": {"type": "string", "enum": ["board", "updated_desc", "created_desc", "priority_desc", "title_asc", "sessions_desc"]},
             },
             "required": ["board_id"],
-        },
-    ),
-    Tool(
-        name="ai_search_cards",
-        description=(
-            "Semantic/natural-language card search, powered by an LLM (mirrors the sessions-list AI "
-            "search). Understands intent, synonyms, and paraphrase — it does NOT require the query "
-            "words to appear literally in the card. Returns ranked matching cards plus the model's "
-            "reasoning and an error field. Use this over search_cards when you don't know the exact "
-            "field/value/wording to filter on; use search_cards for exact text/field/regex matches."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "board_id": {"type": "string"},
-                "query": {"type": "string"},
-                "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-                "label": {"type": "string"},
-                "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 12},
-            },
-            "required": ["board_id", "query"],
         },
     ),
     Tool(
@@ -243,14 +221,6 @@ def dispatch(name: str, arguments: dict):
                 priority=arguments.get("priority"),
                 label=arguments.get("label"),
                 sort=arguments.get("sort"),
-            )
-        case "ai_search_cards":
-            return client.ai_search_cards(
-                arguments["board_id"],
-                arguments["query"],
-                priority=arguments.get("priority"),
-                label=arguments.get("label"),
-                max_results=arguments.get("max_results"),
             )
         case "create_card":
             return client.create_card(
