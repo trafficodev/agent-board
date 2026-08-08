@@ -30,6 +30,16 @@ export interface Card {
   updated_at: string;
 }
 
+export interface Edge {
+  id: string;
+  board_id: string;
+  from_card_id: string;
+  to_card_id: string;
+  type: string;
+  label: string;
+  created_at: string;
+}
+
 export interface CardAiSearchResult {
   results: Card[];
   reasoning: string;

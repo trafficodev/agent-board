@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Board, CanvasSyncStatus, Card, Column, Event } from "../types";
+import type { Board, CanvasSyncStatus, Card, Column, Edge, Event } from "../types";
 import * as api from "../api";
 import { groupSameColumnChildren, isColumnRoot } from "../boardLogic.js";
 import { BOARD_SORTS, filterCardsForBoard, requiresBackendSearch, sortCards } from "../boardSearch.js";
@@ -8,6 +8,7 @@ import CardComponent from "./CardComponent";
 interface Props {
   board: Board;
   cards: Card[];
+  edges: Edge[];
   onRefresh: () => void;
   onBoardUpdated: (board: Board) => void;
 }
@@ -29,7 +30,7 @@ function quoteSearchValue(value: string) {
   return value.replaceAll("\"", " ");
 }
 
-export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: Props) {
+export default function BoardView({ board, cards, edges, onRefresh, onBoardUpdated }: Props) {
   const [dragCardId, setDragCardId] = useState<string | null>(null);
   const [newCardCol, setNewCardCol] = useState<string | null>(null);
   const [newCard, setNewCard] = useState(DEFAULT_NEW_CARD);
@@ -586,6 +587,7 @@ export default function BoardView({ board, cards, onRefresh, onBoardUpdated }: P
                     subTasks={subTasksByParent.get(card.id) ?? []}
                     board={board}
                     allCards={cards}
+                    edges={edges}
                     forceExpanded={expandedCards}
                     onDragStart={setDragCardId}
                     onDelete={handleDeleteCard}

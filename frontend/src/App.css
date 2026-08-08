@@ -647,11 +647,37 @@ textarea {
 }
 
 .card-connections,
+.card-tests,
 .session-history,
 .sub-tasks {
   display: grid;
   gap: 6px;
   margin-top: 10px;
+}
+
+.card-tests .connection-row {
+  background: #ecfdf5;
+}
+
+.card-tests .connection-kind {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.test-status {
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 7px;
+  flex: 0 0 auto;
+}
+
+.test-form {
+  border-radius: 6px;
+  background: var(--surface-strong);
+  margin-top: 10px;
+  padding: 8px;
 }
 
 .connection-row {

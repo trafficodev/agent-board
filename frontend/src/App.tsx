@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import type { Board, Card } from "./types";
+import type { Board, Card, Edge } from "./types";
 import * as api from "./api";
 import BoardView from "./components/BoardView";
 import "./App.css";
@@ -8,6 +8,7 @@ function App() {
   const [boards, setBoards] = useState<Board[]>([]);
   const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
   const [cards, setCards] = useState<Card[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
   const [newBoardName, setNewBoardName] = useState("");
 
   const loadBoards = useCallback(async () => {
@@ -26,6 +27,7 @@ function App() {
   useEffect(() => {
     if (!activeBoardId) return;
     api.listCards(activeBoardId).then(setCards);
+    api.listEdges(activeBoardId).then(setEdges);
   }, [activeBoardId]);
 
   const activeBoard = boards.find((b) => b.id === activeBoardId) ?? null;
@@ -54,8 +56,12 @@ function App() {
 
   const handleRefreshCards = async () => {
     if (!activeBoardId) return;
-    const list = await api.listCards(activeBoardId);
-    setCards(list);
+    const [cardList, edgeList] = await Promise.all([
+      api.listCards(activeBoardId),
+      api.listEdges(activeBoardId),
+    ]);
+    setCards(cardList);
+    setEdges(edgeList);
   };
 
   return (
@@ -100,6 +106,7 @@ function App() {
             key={activeBoard.id}
             board={activeBoard}
             cards={cards}
+            edges={edges}
             onRefresh={handleRefreshCards}
             onBoardUpdated={handleBoardUpdated}
           />

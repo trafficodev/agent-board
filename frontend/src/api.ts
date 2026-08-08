@@ -1,4 +1,4 @@
-import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, Column, Event } from "./types";
+import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, Column, Edge, Event } from "./types";
 
 const BASE = "/api";
 
@@ -60,6 +60,19 @@ export const disableCanvasSync = (boardId: string) =>
   req<CanvasSyncStatus>(`/boards/${boardId}/canvas-sync/disable`, { method: "POST" });
 export const syncCanvas = (boardId: string) =>
   req<CanvasSyncStatus>(`/boards/${boardId}/canvas-sync/sync`, { method: "POST" });
+
+// Edges
+export const listEdges = (boardId: string, cardId?: string, type?: string) => {
+  const params = new URLSearchParams();
+  if (cardId) params.set("card_id", cardId);
+  if (type) params.set("type", type);
+  const suffix = params.toString() ? `?${params}` : "";
+  return req<Edge[]>(`/boards/${boardId}/edges${suffix}`);
+};
+export const createEdge = (boardId: string, data: { from_card_id: string; to_card_id: string; type?: string; label?: string }) =>
+  req<Edge>(`/boards/${boardId}/edges`, { method: "POST", body: JSON.stringify(data) });
+export const deleteEdge = (boardId: string, edgeId: string) =>
+  req<{ ok: boolean }>(`/boards/${boardId}/edges/${edgeId}`, { method: "DELETE" });
 
 // Columns
 export const addColumn = (boardId: string, name: string, position?: number) =>

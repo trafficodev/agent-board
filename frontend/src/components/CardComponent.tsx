@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Board, Card } from "../types";
+import type { Board, Card, Edge } from "../types";
 import * as api from "../api";
 import { isVisualChild } from "../boardLogic.js";
 
@@ -8,12 +8,15 @@ interface Props {
   subTasks: Card[];
   board: Board;
   allCards: Card[];
+  edges: Edge[];
   forceExpanded: boolean;
   onDragStart: (cardId: string) => void;
   onDelete: (cardId: string) => void;
   onMove: (cardId: string, columnId: string) => void;
   onRefresh: () => void;
 }
+
+const TESTS_EDGE_TYPE = "tests";
 
 const PRIORITY_COLORS: Record<string, string> = {
   critical: "#e74c3c",
@@ -43,7 +46,7 @@ function SubTaskTree({ card, allCards, depth = 0 }: { card: Card; allCards: Card
   );
 }
 
-export default function CardComponent({ card, subTasks, board, allCards, forceExpanded, onDragStart, onDelete, onMove, onRefresh }: Props) {
+export default function CardComponent({ card, subTasks, board, allCards, edges, forceExpanded, onDragStart, onDelete, onMove, onRefresh }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(card.title);
@@ -54,6 +57,10 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
   const [subTaskTitle, setSubTaskTitle] = useState("");
   const [subTaskBody, setSubTaskBody] = useState("");
   const [subTaskPriority, setSubTaskPriority] = useState<Card["priority"]>("medium");
+  const [showTestForm, setShowTestForm] = useState(false);
+  const [testTitle, setTestTitle] = useState("");
+  const [testBody, setTestBody] = useState("");
+  const [testBusy, setTestBusy] = useState(false);
 
   const handleSaveEdit = async () => {
     if (!editTitle.trim()) return;
@@ -83,6 +90,35 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
     onRefresh();
   };
 
+  const handleAddTest = async () => {
+    if (!testTitle.trim()) return;
+    setTestBusy(true);
+    try {
+      const testingColumn = board.columns.find((c) => c.name.toLowerCase() === "in testing");
+      const testCard = await api.createCard(board.id, {
+        title: testTitle.trim(),
+        body: testBody.trim(),
+        column_id: testingColumn?.id ?? card.column_id,
+        priority: "medium",
+        labels: ["test", "e2e"],
+      });
+      await api.createEdge(board.id, { from_card_id: testCard.id, to_card_id: card.id, type: TESTS_EDGE_TYPE });
+      setTestTitle("");
+      setTestBody("");
+      setShowTestForm(false);
+      onRefresh();
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
+  const testCardIds = new Set(
+    edges.filter((e) => e.type === TESTS_EDGE_TYPE && e.to_card_id === card.id).map((e) => e.from_card_id)
+  );
+  const testCards = allCards.filter((c) => testCardIds.has(c.id));
+  const verifiesEdge = edges.find((e) => e.type === TESTS_EDGE_TYPE && e.from_card_id === card.id);
+  const verifiedCard = verifiesEdge ? allCards.find((c) => c.id === verifiesEdge.to_card_id) ?? null : null;
+
   const otherColumns = board.columns.filter((c) => c.id !== card.column_id);
   const isExpanded = expanded || forceExpanded;
   const parentCard = card.parent_id ? allCards.find((item) => item.id === card.parent_id) ?? null : null;
@@ -90,7 +126,7 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
     .filter((item) => item.parent_id === card.id)
     .filter((item) => !isVisualChild(item, card))
     .sort((a, b) => a.position - b.position);
-  const connectionCount = (parentCard ? 1 : 0) + linkedChildren.length;
+  const connectionCount = (parentCard ? 1 : 0) + linkedChildren.length + testCards.length + (verifiedCard ? 1 : 0);
 
   return (
     <div
@@ -155,6 +191,57 @@ export default function CardComponent({ card, subTasks, board, allCards, forceEx
                     </div>
                   ))}
                 </div>
+              )}
+
+              {(testCards.length > 0 || verifiedCard) && (
+                <div className="card-tests">
+                  <span className="section-label">Tests ({testCards.length}):</span>
+                  {verifiedCard && (
+                    <div className="connection-row">
+                      <span className="connection-kind">Verifies</span>
+                      <span className="connection-title">{verifiedCard.title}</span>
+                    </div>
+                  )}
+                  {testCards.map((test) => {
+                    const testColumn = board.columns.find((c) => c.id === test.column_id);
+                    return (
+                      <div key={test.id} className="connection-row">
+                        <span className="connection-kind">Test</span>
+                        <span className="connection-title">{test.title}</span>
+                        {testColumn && <span className="test-status">{testColumn.name}</span>}
+                        {test.labels.filter((l) => l !== "test").map((label) => <span key={label} className="label">{label}</span>)}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {showTestForm ? (
+                <div className="test-form">
+                  <input
+                    autoFocus
+                    placeholder="Test title (e.g. User can filter cards by label)..."
+                    value={testTitle}
+                    onChange={(e) => setTestTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setShowTestForm(false);
+                    }}
+                  />
+                  <textarea
+                    placeholder="Preconditions / Steps / Test data / Expected result — describe observable behavior only, not implementation..."
+                    value={testBody}
+                    onChange={(e) => setTestBody(e.target.value)}
+                    rows={4}
+                  />
+                  <div className="new-card-actions">
+                    <button onClick={handleAddTest} disabled={!testTitle.trim() || testBusy}>Add test</button>
+                    <button onClick={() => setShowTestForm(false)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                !card.labels.includes("test") && (
+                  <button className="add-subtask-btn" onClick={() => setShowTestForm(true)}>+ Test</button>
+                )
               )}
 
               {subTasks.length > 0 && (
