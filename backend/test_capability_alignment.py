@@ -32,6 +32,8 @@ UI_CAPABILITIES = {
     "add_session",
     "get_events",
     "get_card_history",
+    "get_card_changes",
+    "set_change_vote",
     "revert_card",
     "get_session_activity",
     "list_edges",
@@ -76,6 +78,25 @@ class CapabilityAlignmentTest(unittest.TestCase):
         for tool_name in ("list_cards", "search_cards"):
             properties = card_tools[tool_name].inputSchema["properties"]
             self.assertIn("sort", properties)
+
+    def test_change_voting_is_exposed_across_surfaces(self):
+        choices = cli.build_parser()._subparsers._group_actions[0].choices
+        self.assertIn("get_change_vote_audit", choices)
+
+        vote_options = {
+            option
+            for action in choices["set_change_vote"]._actions
+            for option in action.option_strings
+        }
+        self.assertTrue({
+            "--provider", "--native-session-id", "--reviewed-commit-sha"
+        }.issubset(vote_options))
+
+        change_tools = {tool.name for tool in GROUPS["changes"].TOOLS}
+        self.assertEqual(
+            {"get_card_changes", "set_change_vote", "get_change_vote_audit"},
+            change_tools,
+        )
 
 
 if __name__ == "__main__":

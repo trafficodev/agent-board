@@ -12,17 +12,24 @@ from models import (
     AnswerNote,
     Card,
     CardNote,
+    ChangeContext,
     CreateCard,
     Event,
     MoveCard,
     RevertCard,
     SessionEntry,
     UpdateCard,
+    new_id,
     _now,
 )
 import card_history
 from board_store import get_board
-from card_diff import diff_snapshots, snapshot_of
+from card_diff import (
+    CHANGELOG_PROJECTION_VERSION,
+    canonical_document,
+    diff_snapshots,
+    snapshot_of,
+)
 from dag_order import dag_sort
 from edge_store import read_edges, write_edges
 
@@ -36,35 +43,55 @@ DAG_ORDERED_COLUMN = "open items"
 _HISTORY_LIMIT = 50
 
 
-# Set for the duration of one API request from the caller's session header.
-request_session: ContextVar[str] = ContextVar("agent_board_request_session", default="")
+# Set only at an authored request boundary. Direct store calls are internal
+# maintenance and intentionally create non-voteable records.
+request_change_context: ContextVar[ChangeContext | None] = ContextVar(
+    "agent_board_request_change_context",
+    default=None,
+)
 
 
-def acting_session() -> tuple[str, str]:
-    """The Better Agent session driving this call, as ``(session_id, system)``.
-
-    Two ways in. In-process callers (an MCP server importing the store, a test)
-    are identified by the session id Better Agent puts in their environment.
-    Callers that reach the shared API server over HTTP carry it in a request
-    header instead, because that server process belongs to no session — it is
-    set per request into ``request_session``.
-
-    Anything with neither is recorded with an empty session_id: unknown
-    authorship, never guessed authorship."""
+def current_change_context() -> ChangeContext:
+    context = request_change_context.get()
+    if context is not None:
+        return context
     session_id = (
-        request_session.get()
-        or os.environ.get("BETTER_AGENT_APP_SESSION_ID")
+        os.environ.get("BETTER_AGENT_APP_SESSION_ID")
         or os.environ.get("BETTER_CLAUDE_APP_SESSION_ID")
         or ""
     ).strip()
-    system = (os.environ.get("BETTER_AGENT_PROVIDER_KIND") or "").strip()
-    return session_id, system
+    if session_id:
+        return ChangeContext.legacy_session(
+            (os.environ.get("BETTER_AGENT_PROVIDER_KIND") or "legacy").strip(),
+            session_id,
+        )
+    return ChangeContext.system("direct-store")
+
+
+def acting_session() -> tuple[str, str]:
+    """Compatibility projection for the card's capped session history."""
+    context = current_change_context()
+    return context.native_session_id, context.provider
 
 
 def _snapshot(card: Card) -> dict:
     # closed_at is stamped by the store itself, not by the caller, so it would
     # otherwise report as a user edit on every close.
     return snapshot_of(card, exclude_metadata_keys=(CLOSED_AT_METADATA_KEY,))
+
+
+def _append_session_entry(card: Card, entry: SessionEntry) -> None:
+    card.session_history.append(entry)
+    overflow = sum(not item.claim_id for item in card.session_history) - _HISTORY_LIMIT
+    if overflow <= 0:
+        return
+    retained: list[SessionEntry] = []
+    for item in card.session_history:
+        if overflow and not item.claim_id:
+            overflow -= 1
+            continue
+        retained.append(item)
+    card.session_history = retained
 
 
 def _record(
@@ -85,16 +112,15 @@ def _record(
     """
     after = _snapshot(card)
     is_version = force or action == "created" or bool(diff_snapshots(before, after))
-    session_id, system = acting_session()
+    context = current_change_context()
+    session_id, system = context.native_session_id, context.provider
     if is_version:
-        card.session_history.append(SessionEntry(
+        _append_session_entry(card, SessionEntry(
             session_id=session_id,
             system=system,
             action=action,
             changes=diff_snapshots(before, after, truncate=True),
         ))
-        if len(card.session_history) > _HISTORY_LIMIT:
-            del card.session_history[:-_HISTORY_LIMIT]
     return Event(
         type=event_type,
         detail=detail or card.title,
@@ -104,6 +130,13 @@ def _record(
         system=system,
         action=action,
         snapshot=after if is_version else None,
+        projection_version=CHANGELOG_PROJECTION_VERSION if is_version else 0,
+        document=canonical_document(card) if is_version else None,
+        provider=context.provider,
+        native_session_id=context.native_session_id,
+        reviewed_commit_sha=context.reviewed_commit_sha,
+        voteable=context.voteable and is_version,
+        cutover_state="authored",
     )
 
 
@@ -588,7 +621,7 @@ def apply_delete(tx: _Transaction, board_id: str, card_id: str) -> bool:
         child.updated_at = now
 
     _reindex_column(board_id, tx.cards, col_id, tx.edges)
-    session_id, system = acting_session()
+    context = current_change_context()
     # The card is going away but its history is not: the journal keeps its
     # final state, so a deleted card can still be inspected afterwards.
     tx.record(Event(
@@ -596,10 +629,17 @@ def apply_delete(tx: _Transaction, board_id: str, card_id: str) -> bool:
         detail=card.title,
         board_id=board_id,
         card_id=card_id,
-        session_id=session_id,
-        system=system,
+        session_id=context.native_session_id,
+        system=context.provider,
         action="deleted",
         snapshot=_snapshot(card),
+        projection_version=CHANGELOG_PROJECTION_VERSION,
+        document=None,
+        provider=context.provider,
+        native_session_id=context.native_session_id,
+        reviewed_commit_sha=context.reviewed_commit_sha,
+        voteable=context.voteable,
+        cutover_state="authored",
     ))
     return True
 
@@ -615,17 +655,17 @@ def add_session(board_id: str, card_id: str, data: AddSession) -> Card | None:
         if not card:
             return None
 
-        # The reported session is the subject here, not the caller, so this is
-        # the one path attributed from the payload rather than acting_session.
-        card.session_history.append(SessionEntry(
+        # The reported session is the subject in the card projection; the
+        # request context still identifies who authored the event.
+        _append_session_entry(card, SessionEntry(
+            claim_id=new_id(),
             session_id=data.session_id,
             system=data.system,
             action=data.action,
             outcome=data.outcome,
         ))
-        if len(card.session_history) > _HISTORY_LIMIT:
-            del card.session_history[:-_HISTORY_LIMIT]
         card.updated_at = _now()
+        context = current_change_context()
         tx.record(Event(
             type="session_added",
             detail=f"session {data.session_id[:8]}… → {card.title}",
@@ -635,6 +675,13 @@ def add_session(board_id: str, card_id: str, data: AddSession) -> Card | None:
             system=data.system,
             action=data.action or "worked",
             snapshot=_snapshot(card),
+            projection_version=CHANGELOG_PROJECTION_VERSION,
+            document=canonical_document(card),
+            provider=context.provider,
+            native_session_id=context.native_session_id,
+            reviewed_commit_sha=context.reviewed_commit_sha,
+            voteable=context.voteable,
+            cutover_state="authored",
         ))
         return card
 

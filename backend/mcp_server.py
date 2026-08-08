@@ -3,18 +3,22 @@
 import asyncio
 import json
 import os
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent
+from mcp.shared.message import SessionMessage
+from mcp.types import JSONRPCMessage, TextContent
 
 import db
 from mcp_tools import GROUPS
 
 _DEFAULT_MAX_CONCURRENCY = 8
 _MAX_CONCURRENCY_LIMIT = 32
+_STDIO_BUFFER_MESSAGES = 1024
 
 
 def _tool_owners() -> dict[str, object]:
@@ -48,8 +52,9 @@ def _max_concurrency() -> int:
 class ToolDispatchOwner:
     def __init__(self, *, max_concurrency: int | None = None) -> None:
         self._owners = _tool_owners()
-        self._limiter = anyio.CapacityLimiter(
-            max_concurrency if max_concurrency is not None else _max_concurrency(),
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_concurrency if max_concurrency is not None else _max_concurrency(),
+            thread_name_prefix="agent-board-mcp",
         )
         self._active: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -67,12 +72,11 @@ class ToolDispatchOwner:
             raise RuntimeError("Agent Board MCP call has no lifecycle owner")
         self._active.add(task)
         try:
-            return await anyio.to_thread.run_sync(
+            return await asyncio.get_running_loop().run_in_executor(
+                self._executor,
                 group.dispatch,
                 name,
                 arguments,
-                abandon_on_cancel=True,
-                limiter=self._limiter,
             )
         finally:
             self._active.discard(task)
@@ -91,6 +95,52 @@ class ToolDispatchOwner:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        self._executor.shutdown(wait=True, cancel_futures=True)
+
+
+@asynccontextmanager
+async def _stdio_transport(owner: ToolDispatchOwner, eof: anyio.Event):
+    read_writer, read = anyio.create_memory_object_stream(_STDIO_BUFFER_MESSAGES)
+    write, write_reader = anyio.create_memory_object_stream(0)
+    stdin = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(stdin)
+    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+        lambda: protocol,
+        sys.stdin.buffer,
+    )
+
+    async def read_stdin():
+        async with read_writer:
+            while line := await stdin.readline():
+                try:
+                    message = JSONRPCMessage.model_validate_json(
+                        line.decode("utf-8", errors="replace")
+                    )
+                except Exception as exc:
+                    await read_writer.send(exc)
+                    continue
+                await read_writer.send(SessionMessage(message))
+        eof.set()
+        await owner.close()
+
+    async def write_stdout():
+        async with write_reader:
+            async for session_message in write_reader:
+                content = session_message.message.model_dump_json(
+                    by_alias=True,
+                    exclude_none=True,
+                )
+                sys.stdout.buffer.write((content + "\n").encode("utf-8"))
+                sys.stdout.buffer.flush()
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(read_stdin)
+        task_group.start_soon(write_stdout)
+        try:
+            yield read, write
+        finally:
+            task_group.cancel_scope.cancel()
+            transport.close()
 
 
 def build_app(owner: ToolDispatchOwner | None = None) -> Server:
@@ -114,9 +164,18 @@ def build_app(owner: ToolDispatchOwner | None = None) -> Server:
 async def main():
     owner = ToolDispatchOwner()
     app = build_app(owner)
+    eof = anyio.Event()
     try:
-        async with stdio_server() as (read, write):
-            await app.run(read, write, app.create_initialization_options())
+        async with _stdio_transport(owner, eof) as (read, write):
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(
+                    app.run,
+                    read,
+                    write,
+                    app.create_initialization_options(),
+                )
+                await eof.wait()
+                task_group.cancel_scope.cancel()
     finally:
         await owner.close()
 

@@ -10,9 +10,9 @@ has to happen in the same transaction as the card write it describes.
 from datetime import datetime, timezone
 
 import db
-from models import CardVersion, Event
+from models import CardChangeItem, CardVersion, ChangeContext, Event
 
-from card_diff import diff_snapshots
+from card_diff import CHANGELOG_PROJECTION_VERSION, diff_snapshots, project_change_items
 
 
 def read_events(board_id: str, tail: int | None = None) -> list[Event]:
@@ -34,6 +34,46 @@ def read_events(board_id: str, tail: int | None = None) -> list[Event]:
             (board_id, tail),
         ).fetchall()[::-1]
     return [db.event_from_row(row) for row in rows]
+
+
+def card_change_items(
+    board_id: str,
+    card_id: str,
+    context: ChangeContext | None = None,
+    include_votes: bool = True,
+) -> list[CardChangeItem]:
+    """Voteable leaf diffs projected from the card's immutable event stream."""
+    rows = db.connect().execute(
+        "SELECT * FROM events WHERE board_id=? AND card_id=?"
+        " AND cutover_state IN ('baseline', 'authored') ORDER BY seq",
+        (board_id, card_id),
+    ).fetchall()
+    previous: dict | None = None
+    items: list[CardChangeItem] = []
+    for row in rows:
+        event = db.event_from_row(row)
+        if event.cutover_state == "baseline":
+            previous = event.document
+            continue
+        before = previous
+        previous = event.document
+        if not event.voteable or event.projection_version != CHANGELOG_PROJECTION_VERSION:
+            continue
+        items.extend(
+            item.model_copy(update={"timestamp": event.timestamp})
+            for item in project_change_items(
+                event.id,
+                before,
+                event.document,
+                commit_sha=event.reviewed_commit_sha,
+            )
+        )
+    if not include_votes:
+        return items
+
+    from vote_store import attach_vote_summaries
+
+    return attach_vote_summaries(items, context)
 
 
 def card_versions(board_id: str, card_id: str) -> list[CardVersion]:

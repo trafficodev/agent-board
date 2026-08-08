@@ -1,24 +1,36 @@
 from __future__ import annotations
 
 import uuid
+import re
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Mapping
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+
+CHANGE_PROVIDER_HEADER = "X-Agent-Board-Provider"
+CHANGE_NATIVE_SESSION_HEADER = "X-Agent-Board-Session"
+CHANGE_REVIEWED_COMMIT_HEADER = "X-Agent-Board-Commit"
+CHANGE_PROVIDER_ENV = "AGENT_BOARD_PROVIDER"
+CHANGE_NATIVE_SESSION_ENV = "AGENT_BOARD_NATIVE_SESSION_ID"
+CHANGE_REVIEWED_COMMIT_ENV = "AGENT_BOARD_REVIEWED_COMMIT_SHA"
+_PROVIDER_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_COMMIT_SHA_PATTERN = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+_MAX_NATIVE_SESSION_ID = 512
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _uid() -> str:
+def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
 # --- Column ---
 
 class Column(BaseModel):
-    id: str = Field(default_factory=_uid)
+    id: str = Field(default_factory=new_id)
     board_id: str = ""
     name: str
     position: int = 0
@@ -27,7 +39,7 @@ class Column(BaseModel):
 # --- Edge (arbitrary typed connection between two cards, same or different board) ---
 
 class Edge(BaseModel):
-    id: str = Field(default_factory=_uid)
+    id: str = Field(default_factory=new_id)
     board_id: str = ""
     from_card_id: str
     to_card_id: str
@@ -41,7 +53,7 @@ class Edge(BaseModel):
 class CardNote(BaseModel):
     """A work note or a question left on a card. A question with no answer is
     open, and open questions are what the UI surfaces for attention."""
-    id: str = Field(default_factory=_uid)
+    id: str = Field(default_factory=new_id)
     kind: Literal["note", "question"] = "note"
     text: str
     session_id: str = ""
@@ -60,6 +72,7 @@ class FieldChange(BaseModel):
 
 
 class SessionEntry(BaseModel):
+    claim_id: str = ""
     session_id: str
     system: str = ""
     timestamp: datetime = Field(default_factory=_now)
@@ -71,7 +84,7 @@ class SessionEntry(BaseModel):
 # --- Card ---
 
 class Card(BaseModel):
-    id: str = Field(default_factory=_uid)
+    id: str = Field(default_factory=new_id)
     board_id: str = ""
     external_id: str = ""
     title: str
@@ -91,7 +104,7 @@ class Card(BaseModel):
 # --- Board ---
 
 class Board(BaseModel):
-    id: str = Field(default_factory=_uid)
+    id: str = Field(default_factory=new_id)
     name: str
     description: str = ""
     remote_url: str = ""  # normalized git remote URL identifying the project this board tracks
@@ -103,6 +116,100 @@ class Board(BaseModel):
 
 # --- Event log ---
 
+class ChangeContext(BaseModel):
+    """Caller-reviewed revision and native identity for one authored change."""
+    provider: str
+    native_session_id: str
+    reviewed_commit_sha: str = ""
+    voteable: bool = True
+
+    @model_validator(mode="after")
+    def _complete_voteable_identity(self):
+        self.provider = self.provider.strip()
+        self.native_session_id = self.native_session_id.strip()
+        self.reviewed_commit_sha = self.reviewed_commit_sha.strip()
+        if not _PROVIDER_PATTERN.fullmatch(self.provider):
+            raise ValueError("provider must be a lowercase provider namespace")
+        if len(self.native_session_id) > _MAX_NATIVE_SESSION_ID:
+            raise ValueError("native_session_id is too long")
+        if self.native_session_id and not self.native_session_id.isprintable():
+            raise ValueError("native_session_id must be printable")
+        if self.voteable and not self.native_session_id:
+            raise ValueError("native_session_id is required for authored changes")
+        if self.voteable and not _COMMIT_SHA_PATTERN.fullmatch(self.reviewed_commit_sha):
+            raise ValueError("reviewed_commit_sha must be a full Git commit SHA")
+        if self.reviewed_commit_sha and not _COMMIT_SHA_PATTERN.fullmatch(
+            self.reviewed_commit_sha
+        ):
+            raise ValueError("reviewed_commit_sha must be a full Git commit SHA")
+        return self
+
+    @classmethod
+    def authored(
+        cls,
+        provider: str,
+        native_session_id: str,
+        reviewed_commit_sha: str,
+    ) -> ChangeContext:
+        return cls(
+            provider=provider,
+            native_session_id=native_session_id,
+            reviewed_commit_sha=reviewed_commit_sha,
+        )
+
+    @classmethod
+    def system(cls, _purpose: str) -> ChangeContext:
+        return cls(provider="system", native_session_id="", voteable=False)
+
+    @classmethod
+    def legacy_session(cls, provider: str, native_session_id: str) -> ChangeContext:
+        return cls(
+            provider=provider or "legacy",
+            native_session_id=native_session_id,
+            voteable=False,
+        )
+
+    @classmethod
+    def reader(cls, provider: str, native_session_id: str) -> ChangeContext:
+        return cls(
+            provider=provider,
+            native_session_id=native_session_id,
+            voteable=False,
+        )
+
+    @classmethod
+    def from_headers(cls, headers: Mapping[str, str]) -> ChangeContext:
+        normalized = {key.lower(): value for key, value in headers.items()}
+        return cls.authored(
+            normalized.get(CHANGE_PROVIDER_HEADER.lower(), ""),
+            normalized.get(CHANGE_NATIVE_SESSION_HEADER.lower(), ""),
+            normalized.get(CHANGE_REVIEWED_COMMIT_HEADER.lower(), ""),
+        )
+
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str]) -> ChangeContext:
+        provider = environ.get(CHANGE_PROVIDER_ENV, "").strip()
+        native_session_id = environ.get(CHANGE_NATIVE_SESSION_ENV, "").strip()
+        if not native_session_id:
+            native_session_id = (
+                environ.get("BETTER_AGENT_APP_SESSION_ID", "")
+                or environ.get("BETTER_CLAUDE_APP_SESSION_ID", "")
+            ).strip()
+        if not provider:
+            provider = environ.get("BETTER_AGENT_PROVIDER_KIND", "").strip()
+        return cls.authored(
+            provider,
+            native_session_id,
+            environ.get(CHANGE_REVIEWED_COMMIT_ENV, ""),
+        )
+
+    def headers(self) -> dict[str, str]:
+        return {
+            CHANGE_PROVIDER_HEADER: self.provider,
+            CHANGE_NATIVE_SESSION_HEADER: self.native_session_id,
+            CHANGE_REVIEWED_COMMIT_HEADER: self.reviewed_commit_sha,
+        }
+
 class Event(BaseModel):
     """One durable, append-only fact about a board.
 
@@ -111,7 +218,7 @@ class Event(BaseModel):
     journal keeps every version in full so a card can be reconstructed as of
     any point in time and survives the card's own deletion.
     """
-    id: str = Field(default_factory=_uid)
+    id: str = Field(default_factory=new_id)
     timestamp: datetime = Field(default_factory=_now)
     type: str
     detail: str = ""
@@ -124,6 +231,13 @@ class Event(BaseModel):
     action: str = ""
     # Whole tracked-field state of the card right after this mutation.
     snapshot: dict[str, Any] | None = None
+    projection_version: int = 0
+    document: dict[str, Any] | None = None
+    provider: str = ""
+    native_session_id: str = ""
+    reviewed_commit_sha: str = ""
+    voteable: bool = False
+    cutover_state: Literal["legacy", "baseline", "authored"] = "legacy"
     # Journals written before attribution was structured stored a bare actor
     # string. Reading it back keeps those events attributed; nothing writes it.
     legacy_actor: str = Field(default="", validation_alias="actor", exclude=True)
@@ -133,7 +247,13 @@ class Event(BaseModel):
     def actor(self) -> str:
         """Display name for whoever caused this. Derived, never stored, so it
         cannot drift from the identity fields it summarizes."""
-        return self.system or self.session_id or self.legacy_actor
+        return (
+            self.provider
+            or self.system
+            or self.native_session_id
+            or self.session_id
+            or self.legacy_actor
+        )
 
 
 class CardVersion(BaseModel):
@@ -146,6 +266,38 @@ class CardVersion(BaseModel):
     system: str = ""
     changes: list[FieldChange] = Field(default_factory=list)
     snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChangeVoteSummary(BaseModel):
+    up: int = 0
+    down: int = 0
+    current: Literal[-1, 1] | None = None
+
+
+class ChangeVoteEvent(BaseModel):
+    """One immutable vote decision; effective totals use each voter's latest."""
+    id: str = Field(default_factory=new_id)
+    target_id: str
+    event_id: str
+    provider: str
+    native_session_id: str
+    reviewed_commit_sha: str
+    direction: Literal[-1, 1]
+    timestamp: datetime = Field(default_factory=_now)
+
+
+class CardChangeItem(BaseModel):
+    """One immutable, voteable operation projected from a card event."""
+    id: str
+    event_id: str
+    projection_version: int
+    ordinal: int
+    path: str
+    operation: Literal["add", "remove", "replace"]
+    diff: str
+    commit_sha: str = ""
+    timestamp: datetime | None = None
+    votes: ChangeVoteSummary = Field(default_factory=ChangeVoteSummary)
 
 
 # --- Request models ---

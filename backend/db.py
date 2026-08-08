@@ -23,10 +23,20 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from models import Board, Card, CardNote, Column, Edge, Event, FieldChange, SessionEntry
+from models import (
+    Board,
+    Card,
+    CardNote,
+    ChangeVoteEvent,
+    Column,
+    Edge,
+    Event,
+    FieldChange,
+    SessionEntry,
+)
 from paths import home
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Which caller each index serves. Kept next to the DDL so an index cannot
 # quietly outlive the query that justified it.
@@ -46,8 +56,12 @@ INDEX_NOTES = {
     "idx_edges_from": "list_edges(card_id), DAG ordering",
     "idx_edges_to": "list_edges(card_id) reverse direction",
     "idx_events_board_seq": "get_events tail",
+    "idx_events_id": "stable changelog target identity (unique)",
     "idx_events_card": "get_card_history, revert_card",
     "idx_events_session": "get_session_activity",
+    "idx_events_baseline_card": "one cutover baseline per live card",
+    "idx_change_votes_target": "effective totals and vote audit by change item",
+    "idx_change_votes_voter": "latest vote per provider-native session and item",
     "idx_board_remotes_url": "ensure_project_board / get_board_by_remote_url (unique)",
 }
 
@@ -138,6 +152,7 @@ CREATE TABLE IF NOT EXISTS card_sessions (
     board_id   TEXT NOT NULL,
     card_id    TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
     seq        INTEGER NOT NULL,
+    claim_id   TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL DEFAULT '',
     system     TEXT NOT NULL DEFAULT '',
     timestamp  TEXT NOT NULL,
@@ -174,11 +189,35 @@ CREATE TABLE IF NOT EXISTS events (
     type       TEXT NOT NULL,
     detail     TEXT NOT NULL DEFAULT '',
     timestamp  TEXT NOT NULL,
-    snapshot   TEXT
+    snapshot   TEXT,
+    projection_version INTEGER NOT NULL DEFAULT 0,
+    document   TEXT,
+    provider   TEXT NOT NULL DEFAULT '',
+    native_session_id TEXT NOT NULL DEFAULT '',
+    reviewed_commit_sha TEXT NOT NULL DEFAULT '',
+    voteable   INTEGER NOT NULL DEFAULT 0,
+    cutover_state TEXT NOT NULL DEFAULT 'legacy'
 );
 CREATE INDEX IF NOT EXISTS idx_events_board_seq ON events(board_id, seq DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_id ON events(id);
 CREATE INDEX IF NOT EXISTS idx_events_card      ON events(board_id, card_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_session   ON events(session_id, seq DESC);
+
+CREATE TABLE IF NOT EXISTS change_votes (
+    seq                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  TEXT NOT NULL UNIQUE,
+    target_id           TEXT NOT NULL,
+    event_id            TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    native_session_id   TEXT NOT NULL,
+    reviewed_commit_sha TEXT NOT NULL,
+    direction           INTEGER NOT NULL CHECK(direction IN (-1, 1)),
+    timestamp           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_votes_target
+    ON change_votes(target_id, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_change_votes_voter
+    ON change_votes(target_id, provider, native_session_id, seq DESC);
 
 -- Full-text over what search actually matches. Contentless-external so the
 -- card row stays the only copy of title/body; triggers keep it in step.
@@ -230,15 +269,84 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
+    stored_version = _stored_schema_version(conn)
     conn.executescript(SCHEMA)
+    if stored_version is None:
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+    else:
+        _migrate_schema(conn, stored_version)
     conn.execute(
-        "INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_baseline_card"
+        " ON events(card_id) WHERE cutover_state='baseline'"
     )
     _local.conn = conn
     _local.path = path
     _local.depth = 0
     return conn
+
+
+def _stored_schema_version(conn: sqlite3.Connection) -> int | None:
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+    ).fetchone():
+        return None
+    row = conn.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()
+    return int(row[0]) if row else 1
+
+
+def _migrate_schema(conn: sqlite3.Connection, stored_version: int) -> None:
+    if stored_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Database schema {stored_version} is newer than supported schema {SCHEMA_VERSION}"
+        )
+    migrations = {1: _migrate_schema_1_to_2}
+    version = stored_version
+    while version < SCHEMA_VERSION:
+        migration = migrations.get(version)
+        if migration is None:
+            raise RuntimeError(f"No contiguous schema migration from version {version}")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            migration(conn)
+            version += 1
+            conn.execute(
+                "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(version),),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def _migrate_schema_1_to_2(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+    columns = {
+        "projection_version": "INTEGER NOT NULL DEFAULT 0",
+        "document": "TEXT",
+        "provider": "TEXT NOT NULL DEFAULT ''",
+        "native_session_id": "TEXT NOT NULL DEFAULT ''",
+        "reviewed_commit_sha": "TEXT NOT NULL DEFAULT ''",
+        "voteable": "INTEGER NOT NULL DEFAULT 0",
+        "cutover_state": "TEXT NOT NULL DEFAULT 'legacy'",
+    }
+    for name, declaration in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {name} {declaration}")
+    session_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(card_sessions)")
+    }
+    if "claim_id" not in session_columns:
+        conn.execute(
+            "ALTER TABLE card_sessions ADD COLUMN claim_id TEXT NOT NULL DEFAULT ''"
+        )
+    _write_cutover_baselines(conn)
 
 
 def close() -> None:
@@ -359,6 +467,7 @@ def note_from_row(row: sqlite3.Row) -> CardNote:
 
 def session_from_row(row: sqlite3.Row) -> SessionEntry:
     return SessionEntry(
+        claim_id=row["claim_id"],
         session_id=row["session_id"],
         system=row["system"],
         timestamp=_dt(row["timestamp"]),
@@ -392,6 +501,13 @@ def event_from_row(row: sqlite3.Row) -> Event:
         system=row["system"],
         action=row["action"],
         snapshot=json.loads(row["snapshot"]) if row["snapshot"] else None,
+        projection_version=row["projection_version"],
+        document=json.loads(row["document"]) if row["document"] else None,
+        provider=row["provider"],
+        native_session_id=row["native_session_id"],
+        reviewed_commit_sha=row["reviewed_commit_sha"],
+        voteable=bool(row["voteable"]),
+        cutover_state=row["cutover_state"],
     )
 
 
@@ -444,13 +560,13 @@ def write_card(conn: sqlite3.Connection, card: Card) -> None:
     conn.execute("DELETE FROM card_sessions WHERE card_id=?", (card.id,))
     conn.executemany(
         """INSERT INTO card_sessions
-               (board_id, card_id, seq, session_id, system, timestamp,
-                action, outcome, changes)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+               (board_id, card_id, seq, claim_id, session_id, system,
+                timestamp, action, outcome, changes)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         [
             (
-                card.board_id, card.id, seq, entry.session_id, entry.system,
-                entry.timestamp.isoformat(), entry.action, entry.outcome,
+                card.board_id, card.id, seq, entry.claim_id, entry.session_id,
+                entry.system, entry.timestamp.isoformat(), entry.action, entry.outcome,
                 json.dumps([c.model_dump(mode="json") for c in entry.changes], default=str),
             )
             for seq, entry in enumerate(card.session_history)
@@ -462,15 +578,84 @@ def write_event(conn: sqlite3.Connection, event: Event) -> None:
     conn.execute(
         """INSERT INTO events
                (id, board_id, card_id, session_id, system, action, type,
-                detail, timestamp, snapshot)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                detail, timestamp, snapshot, projection_version, document,
+                provider, native_session_id, reviewed_commit_sha, voteable,
+                cutover_state)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             event.id, event.board_id, event.card_id, event.session_id,
             event.system, event.action, event.type, event.detail,
             event.timestamp.isoformat(),
             json.dumps(event.snapshot, default=str) if event.snapshot is not None else None,
+            event.projection_version,
+            json.dumps(event.document, default=str) if event.document is not None else None,
+            event.provider, event.native_session_id, event.reviewed_commit_sha,
+            int(event.voteable), event.cutover_state,
         ),
     )
+
+
+def change_vote_from_row(row: sqlite3.Row) -> ChangeVoteEvent:
+    return ChangeVoteEvent(
+        id=row["id"],
+        target_id=row["target_id"],
+        event_id=row["event_id"],
+        provider=row["provider"],
+        native_session_id=row["native_session_id"],
+        reviewed_commit_sha=row["reviewed_commit_sha"],
+        direction=row["direction"],
+        timestamp=_dt(row["timestamp"]),
+    )
+
+
+def write_change_vote(conn: sqlite3.Connection, vote: ChangeVoteEvent) -> None:
+    conn.execute(
+        """INSERT INTO change_votes
+               (id, target_id, event_id, provider, native_session_id,
+                reviewed_commit_sha, direction, timestamp)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            vote.id,
+            vote.target_id,
+            vote.event_id,
+            vote.provider,
+            vote.native_session_id,
+            vote.reviewed_commit_sha,
+            vote.direction,
+            vote.timestamp.isoformat(),
+        ),
+    )
+
+
+def _write_cutover_baselines(
+    conn: sqlite3.Connection,
+    board_id: str | None = None,
+) -> None:
+    """Anchor every live card once without pretending it had review context."""
+    from card_diff import CHANGELOG_PROJECTION_VERSION, canonical_document
+
+    where = "WHERE board_id=?" if board_id else ""
+    params = (board_id,) if board_id else ()
+    rows = conn.execute(f"SELECT * FROM cards {where} ORDER BY rowid", params).fetchall()
+    for card in hydrate_cards(conn, rows):
+        exists = conn.execute(
+            "SELECT 1 FROM events WHERE card_id=? AND cutover_state='baseline'",
+            (card.id,),
+        ).fetchone()
+        if exists:
+            continue
+        write_event(conn, Event(
+            type="card_baseline",
+            detail=card.title,
+            board_id=card.board_id,
+            card_id=card.id,
+            provider="system",
+            action="baseline",
+            projection_version=CHANGELOG_PROJECTION_VERSION,
+            document=canonical_document(card),
+            voteable=False,
+            cutover_state="baseline",
+        ))
 
 
 def write_edge(conn: sqlite3.Connection, edge: Edge) -> None:
@@ -582,6 +767,7 @@ def migrate_json_if_needed() -> dict:
             cards += _migrate_cards(tx, board_file, board.id)
             edges += _migrate_edges(tx, board_file, board.id)
             events += _migrate_events(tx, board.id)
+            _write_cutover_baselines(tx, board.id)
 
         if boards == 0:
             return {

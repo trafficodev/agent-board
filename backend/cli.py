@@ -244,6 +244,60 @@ def build_parser() -> argparse.ArgumentParser:
         func=lambda args: client.get_card_history(args.board_id, args.card_id, at=args.at)
     )
 
+    get_card_changes = sub.add_parser("get_card_changes")
+    get_card_changes.add_argument("board_id")
+    get_card_changes.add_argument("card_id")
+    get_card_changes.add_argument("--provider", default="")
+    get_card_changes.add_argument("--native-session-id", default="")
+    get_card_changes.add_argument("--offset", type=int, default=0)
+    get_card_changes.add_argument("--limit", type=int, default=200)
+    get_card_changes.set_defaults(
+        func=lambda args: client.get_card_changes(
+            args.board_id,
+            args.card_id,
+            provider=args.provider,
+            native_session_id=args.native_session_id,
+            offset=args.offset,
+            limit=args.limit,
+        )
+    )
+
+    set_change_vote = sub.add_parser("set_change_vote")
+    set_change_vote.add_argument("board_id")
+    set_change_vote.add_argument("card_id")
+    set_change_vote.add_argument("target_id")
+    set_change_vote.add_argument("direction", type=int, choices=(-1, 1))
+    set_change_vote.add_argument("--provider", required=True)
+    set_change_vote.add_argument("--native-session-id", required=True)
+    set_change_vote.add_argument("--reviewed-commit-sha", required=True)
+    set_change_vote.set_defaults(
+        func=lambda args: client.set_change_vote(
+            args.board_id,
+            args.card_id,
+            args.target_id,
+            args.direction,
+            args.provider,
+            args.native_session_id,
+            args.reviewed_commit_sha,
+        )
+    )
+
+    get_change_vote_audit = sub.add_parser("get_change_vote_audit")
+    get_change_vote_audit.add_argument("board_id")
+    get_change_vote_audit.add_argument("card_id")
+    get_change_vote_audit.add_argument("target_id")
+    get_change_vote_audit.add_argument("--offset", type=int, default=0)
+    get_change_vote_audit.add_argument("--limit", type=int, default=200)
+    get_change_vote_audit.set_defaults(
+        func=lambda args: client.get_change_vote_audit(
+            args.board_id,
+            args.card_id,
+            args.target_id,
+            offset=args.offset,
+            limit=args.limit,
+        )
+    )
+
     revert_card = sub.add_parser("revert_card")
     revert_card.add_argument("board_id")
     revert_card.add_argument("card_id")

@@ -17,8 +17,9 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from models import ChangeContext
+
 BASE_URL = os.environ.get("AGENT_BOARD_URL", "http://localhost:8001")
-SESSION_HEADER = "X-Better-Agent-Session"
 _API_PATH = Path(__file__).resolve().parent
 _BACKEND_DIR = _API_PATH
 _STARTUP_ATTEMPTS = 50
@@ -175,22 +176,19 @@ def ensure_server() -> None:
         raise AgentBoardUnavailableError(f"Agent Board backend failed to start at {BASE_URL}")
 
 
-def _req(method: str, path: str, body: dict | None = None) -> dict | list:
+def _req(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    change_context: ChangeContext | None = None,
+) -> dict | list:
     global _ready_url
     ensure_server()
     url = f"{_normalized_base_url()}{path}"
     data = json.dumps(body).encode() if body else None
     headers = {"Content-Type": "application/json"}
-    # The MCP server knows which Better Agent session is calling; the API
-    # server is shared and does not. Forward the identity so card history is
-    # attributed to the session that actually made the change.
-    session_id = (
-        os.environ.get("BETTER_AGENT_APP_SESSION_ID")
-        or os.environ.get("BETTER_CLAUDE_APP_SESSION_ID")
-        or ""
-    ).strip()
-    if session_id:
-        headers[SESSION_HEADER] = session_id
+    if change_context is not None:
+        headers.update(change_context.headers())
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -324,35 +322,74 @@ def relevant_candidates(board_id: str, query: str, priority: str | None = None, 
 def create_card(board_id: str, title: str, column_id: str, body: str = "",
                 parent_id: str | None = None, priority: str = "medium",
                 labels: list[str] | None = None, external_id: str = "",
-                metadata: dict | None = None) -> dict:
+                metadata: dict | None = None,
+                change_context: ChangeContext | None = None) -> dict:
     return _req("POST", f"/api/boards/{board_id}/cards", {
         "external_id": external_id, "title": title, "body": body, "column_id": column_id,
         "parent_id": parent_id, "priority": priority, "labels": labels or [],
         "metadata": metadata or {},
-    })
+    }, change_context or ChangeContext.from_environment(os.environ))
 
 
 def get_card(board_id: str, card_id: str) -> dict:
     return _req("GET", f"/api/boards/{board_id}/cards/{card_id}")
 
 
-def bulk_cards(board_id: str, operations: list[dict]) -> dict:
-    return _req("POST", f"/api/boards/{board_id}/cards/bulk", {"operations": operations})
+def bulk_cards(
+    board_id: str,
+    operations: list[dict],
+    change_context: ChangeContext | None = None,
+) -> dict:
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards/bulk",
+        {"operations": operations},
+        change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
-def update_card(board_id: str, card_id: str, **fields) -> dict:
-    return _req("PATCH", f"/api/boards/{board_id}/cards/{card_id}", fields)
+def update_card(
+    board_id: str,
+    card_id: str,
+    change_context: ChangeContext | None = None,
+    **fields,
+) -> dict:
+    return _req(
+        "PATCH",
+        f"/api/boards/{board_id}/cards/{card_id}",
+        fields,
+        change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
-def add_card_note(board_id: str, card_id: str, text: str, kind: str = "note") -> dict:
-    return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/notes", {"kind": kind, "text": text})
+def add_card_note(
+    board_id: str,
+    card_id: str,
+    text: str,
+    kind: str = "note",
+    change_context: ChangeContext | None = None,
+) -> dict:
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards/{card_id}/notes",
+        {"kind": kind, "text": text},
+        change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
-def answer_card_question(board_id: str, card_id: str, note_id: str, answer: str, answered_by: str = "") -> dict:
+def answer_card_question(
+    board_id: str,
+    card_id: str,
+    note_id: str,
+    answer: str,
+    answered_by: str = "",
+    change_context: ChangeContext | None = None,
+) -> dict:
     return _req(
         "POST",
         f"/api/boards/{board_id}/cards/{card_id}/notes/{note_id}/answer",
         {"answer": answer, "answered_by": answered_by},
+        change_context or ChangeContext.from_environment(os.environ),
     )
 
 
@@ -361,19 +398,39 @@ def open_questions(board_id: str = "") -> dict:
     return _req("GET", f"/api/questions/open{suffix}")
 
 
-def move_card(board_id: str, card_id: str, column_id: str, position: int | None = None) -> dict:
-    return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/move", {"column_id": column_id, "position": position})
+def move_card(
+    board_id: str,
+    card_id: str,
+    column_id: str,
+    position: int | None = None,
+    change_context: ChangeContext | None = None,
+) -> dict:
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards/{card_id}/move",
+        {"column_id": column_id, "position": position},
+        change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
-def delete_card(board_id: str, card_id: str) -> dict:
-    return _req("DELETE", f"/api/boards/{board_id}/cards/{card_id}")
+def delete_card(
+    board_id: str,
+    card_id: str,
+    change_context: ChangeContext | None = None,
+) -> dict:
+    return _req(
+        "DELETE",
+        f"/api/boards/{board_id}/cards/{card_id}",
+        change_context=change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
 def add_session(board_id: str, card_id: str, session_id: str, system: str = "",
-                action: str = "", outcome: str | None = None) -> dict:
+                action: str = "", outcome: str | None = None,
+                change_context: ChangeContext | None = None) -> dict:
     return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/sessions", {
         "session_id": session_id, "system": system, "action": action, "outcome": outcome,
-    })
+    }, change_context or ChangeContext.from_environment(os.environ))
 
 
 def get_events(board_id: str, limit: int = 100) -> list[dict]:
@@ -385,8 +442,74 @@ def get_card_history(board_id: str, card_id: str, at: str = "") -> dict:
     return _req("GET", f"/api/boards/{board_id}/cards/{card_id}/history{suffix}")
 
 
-def revert_card(board_id: str, card_id: str, version: int) -> dict:
-    return _req("POST", f"/api/boards/{board_id}/cards/{card_id}/revert", {"version": version})
+def get_card_changes(
+    board_id: str,
+    card_id: str,
+    provider: str = "",
+    native_session_id: str = "",
+    offset: int = 0,
+    limit: int = 200,
+) -> dict:
+    context = (
+        ChangeContext.reader(provider, native_session_id)
+        if provider and native_session_id
+        else None
+    )
+    return _req(
+        "GET",
+        f"/api/boards/{board_id}/cards/{card_id}/changes?offset={offset}&limit={limit}",
+        change_context=context,
+    )
+
+
+def set_change_vote(
+    board_id: str,
+    card_id: str,
+    target_id: str,
+    direction: int,
+    provider: str,
+    native_session_id: str,
+    reviewed_commit_sha: str,
+) -> dict:
+    context = ChangeContext.authored(
+        provider,
+        native_session_id,
+        reviewed_commit_sha,
+    )
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards/{card_id}/changes/{target_id}/vote",
+        {"direction": direction},
+        context,
+    )
+
+
+def get_change_vote_audit(
+    board_id: str,
+    card_id: str,
+    target_id: str,
+    offset: int = 0,
+    limit: int = 200,
+) -> dict:
+    return _req(
+        "GET",
+        f"/api/boards/{board_id}/cards/{card_id}/changes/{target_id}/votes"
+        f"?offset={offset}&limit={limit}",
+    )
+
+
+def revert_card(
+    board_id: str,
+    card_id: str,
+    version: int,
+    change_context: ChangeContext | None = None,
+) -> dict:
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards/{card_id}/revert",
+        {"version": version},
+        change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
 def get_session_activity(session_id: str, board_id: str = "", limit: int = 200) -> dict:

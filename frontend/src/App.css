@@ -648,11 +648,59 @@ textarea {
 
 .card-connections,
 .card-tests,
+.card-changelog,
 .session-history,
 .sub-tasks {
   display: grid;
   gap: 6px;
   margin-top: 10px;
+}
+
+.change-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.change-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.change-heading label {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 11px;
+  gap: 6px;
+}
+
+.change-item pre {
+  background: var(--surface-strong);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+  overflow-x: auto;
+  padding: 8px;
+  white-space: pre;
+}
+
+.change-votes {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+}
+
+.change-votes button.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.change-error {
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .card-tests .connection-row {

@@ -1,18 +1,18 @@
 ---
 name: use_agents_board
-description: Use when an agent needs to inspect, query, import, sync, or modify Agent Board data. Covers the JSON database files under ~/.agent-board, grep/jq search patterns, REST endpoints, and the board/card/canvas-sync persistence model.
+description: Use when an agent needs to inspect, query, import, sync, or modify Agent Board data through the SQLite-backed CLI, API, or MCP surfaces.
 ---
 
 # Use Agent Board
 
-Agent Board stores data as grepable JSON files, not SQL.
+Agent Board stores durable data in SQLite. Use the CLI, REST API, or MCP tools for writes; do not edit the database directly.
 
 ## Storage
 
-Default root:
+Default database:
 
 ```bash
-~/.agent-board
+~/.agent-board/agent-board.sqlite3
 ```
 
 Override root:
@@ -21,52 +21,48 @@ Override root:
 AGENT_BOARD_HOME=/path/to/home
 ```
 
-Files:
-
-```bash
-~/.agent-board/boards/<board_id>.json
-~/.agent-board/boards/<board_id>_cards.json
-~/.agent-board/events/<board_id>.jsonl
-~/.agent-board/canvas_sync.json
-```
-
 Code owners:
 
 ```bash
 /Users/ofekron/agent-board/backend/paths.py
+/Users/ofekron/agent-board/backend/db.py
 /Users/ofekron/agent-board/backend/board_store.py
 /Users/ofekron/agent-board/backend/card_store.py
+/Users/ofekron/agent-board/backend/edge_store.py
 /Users/ofekron/agent-board/backend/canvas_sync.py
 /Users/ofekron/agent-board/backend/search_logic.py
 ```
 
-## Grepability
+Legacy JSON is imported transactionally at startup and is not the live source of truth.
 
-Yes: board/card/event files are plain JSON/JSONL and can be searched with `rg`.
+## CLI and MCP
 
-Use `rg` for quick text search:
-
-```bash
-rg "req-0007|latest event|git_commits|edited_files" ~/.agent-board
-```
-
-Use `jq` for structured card queries:
+Run the CLI with the backend virtual environment:
 
 ```bash
-jq '.[] | select((.labels // [])[]? == "requirement") | {id,title,parent_id,body}' ~/.agent-board/boards/*_cards.json
+AB_PY=/Users/ofekron/agent-board/backend/.venv/bin/python
+AB_CLI=/Users/ofekron/agent-board/backend/cli.py
+"$AB_PY" "$AB_CLI" --help
 ```
 
-Find cards mentioning a file or commit:
+Resolve the project board from its normalized Git remote instead of hard-coding a board ID:
 
 ```bash
-rg "frontend/src/App.tsx|abc1234" ~/.agent-board/boards/*_cards.json
+REMOTE_URL=$(git remote get-url origin)
+"$AB_PY" "$AB_CLI" ensure_project_board "$REMOTE_URL"
 ```
 
-Find a board by name:
+Common operations:
 
 ```bash
-jq -r 'select(.name | test("Better Claude"; "i")) | .id + " " + .name' ~/.agent-board/boards/*.json
+"$AB_PY" "$AB_CLI" list_cards BOARD_ID
+"$AB_PY" "$AB_CLI" search_cards BOARD_ID --query 'label:requirement'
+"$AB_PY" "$AB_CLI" get_card BOARD_ID CARD_ID
+"$AB_PY" "$AB_CLI" bulk_cards BOARD_ID '[{"op":"create",...}]'
+"$AB_PY" "$AB_CLI" move_card BOARD_ID CARD_ID COLUMN_ID
 ```
+
+The MCP tools expose the same store behavior. Prefer `bulk_cards` for sparse atomic updates; avoid replacing whole cards when only one field changes.
 
 ## API Surface
 
@@ -84,6 +80,11 @@ POST /api/boards
 GET  /api/boards/{board_id}
 GET  /api/boards/{board_id}/cards
 GET  /api/boards/{board_id}/cards/search?query=...
+POST /api/boards/{board_id}/cards/bulk
+GET  /api/boards/{board_id}/cards/{card_id}
+PATCH /api/boards/{board_id}/cards/{card_id}
+POST /api/boards/{board_id}/cards/{card_id}/move
+POST /api/projects/ensure-board
 POST /api/import/board
 POST /api/boards/{board_id}/canvas-sync/enable
 POST /api/boards/{board_id}/canvas-sync/sync
@@ -110,7 +111,7 @@ Import payload shape:
 }
 ```
 
-`external_id` is used during import to resolve parent links. Check the current code before assuming it is persisted on the card.
+`external_id` is persisted and is used during import to resolve parent links.
 
 ## Search Behavior
 

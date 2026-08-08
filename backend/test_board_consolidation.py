@@ -13,9 +13,10 @@ import card_history
 import card_store
 import edge_store
 import search_logic
+import vote_store
 from fastapi.testclient import TestClient
 from main import app
-from models import AddNote, AddSession, CreateCard, CreateEdge, MoveCard, UpdateCard
+from models import AddNote, AddSession, ChangeContext, CreateCard, CreateEdge, MoveCard, UpdateCard
 
 
 class BoardConsolidationTest(unittest.TestCase):
@@ -302,6 +303,45 @@ class BoardConsolidationTest(unittest.TestCase):
             if card.id == source_card.id
         ]
         self.assertEqual(len(matching), 1)
+
+    def test_consolidation_preserves_vote_targets_and_resets_projected_state(self):
+        context = ChangeContext.authored("codex", "native", "a" * 40)
+        source_open = self._column(self.source, "Open Items")
+        token = card_store.request_change_context.set(context)
+        try:
+            card = card_store.create_card(
+                self.source.id,
+                CreateCard(title="Vote", body="before", column_id=source_open.id),
+            )
+        finally:
+            card_store.request_change_context.reset(token)
+        target = next(
+            item
+            for item in card_history.card_change_items(self.source.id, card.id)
+            if item.path == "/body"
+        )
+        vote_store.set_vote(self.source.id, card.id, target.id, 1, context)
+
+        board_consolidation.consolidate_project_board(self.source.id, self.target.id)
+
+        migrated = card_history.card_change_items(self.target.id, card.id, context)
+        self.assertIn(target.id, {item.id for item in migrated})
+        self.assertEqual(
+            next(item for item in migrated if item.id == target.id).votes.up,
+            1,
+        )
+
+        token = card_store.request_change_context.set(context)
+        try:
+            card_store.update_card(self.target.id, card.id, UpdateCard(body="after"))
+        finally:
+            card_store.request_change_context.reset(token)
+        replacements = [
+            item.path
+            for item in card_history.card_change_items(self.target.id, card.id)
+            if item.operation == "replace" and "+after" in item.diff
+        ]
+        self.assertEqual(replacements, ["/body"])
 
     def test_pending_manifest_blocks_ordinary_api_reads(self):
         manifest = board_consolidation._manifest_path(self.source.id, self.target.id)

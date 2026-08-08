@@ -3,6 +3,7 @@
 from mcp.types import Tool
 
 import client
+from mcp_tools.context import CHANGE_CONTEXT_PROPERTIES, change_context_from_arguments
 
 TOOLS = [
     Tool(
@@ -96,6 +97,7 @@ TOOLS = [
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "metadata": {"type": "object"},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "title", "column_id"],
         },
@@ -145,6 +147,7 @@ TOOLS = [
                         "required": ["op"],
                     },
                 },
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "operations"],
         },
@@ -176,6 +179,7 @@ TOOLS = [
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "metadata": {"type": "object"},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id"],
         },
@@ -190,6 +194,7 @@ TOOLS = [
                 "card_id": {"type": "string"},
                 "column_id": {"type": "string", "description": "Target column ID"},
                 "position": {"type": "integer", "description": "Position in target column. Omit to append."},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id", "column_id"],
         },
@@ -202,6 +207,7 @@ TOOLS = [
             "properties": {
                 "board_id": {"type": "string"},
                 "card_id": {"type": "string"},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id"],
         },
@@ -233,22 +239,41 @@ def dispatch(name: str, arguments: dict):
                 labels=arguments.get("labels"),
                 external_id=arguments.get("external_id", ""),
                 metadata=arguments.get("metadata"),
+                change_context=change_context_from_arguments(arguments),
             )
         case "bulk_cards":
-            return client.bulk_cards(arguments["board_id"], arguments["operations"])
+            return client.bulk_cards(
+                arguments["board_id"],
+                arguments["operations"],
+                change_context_from_arguments(arguments),
+            )
         case "get_card":
             return client.get_card(arguments["board_id"], arguments["card_id"])
         case "update_card":
-            fields = {k: v for k, v in arguments.items() if k not in ("board_id", "card_id") and v is not None}
-            return client.update_card(arguments["board_id"], arguments["card_id"], **fields)
+            fields = {
+                k: v
+                for k, v in arguments.items()
+                if k not in ("board_id", "card_id", *CHANGE_CONTEXT_PROPERTIES) and v is not None
+            }
+            return client.update_card(
+                arguments["board_id"],
+                arguments["card_id"],
+                change_context=change_context_from_arguments(arguments),
+                **fields,
+            )
         case "move_card":
             return client.move_card(
                 arguments["board_id"],
                 arguments["card_id"],
                 arguments["column_id"],
                 arguments.get("position"),
+                change_context_from_arguments(arguments),
             )
         case "delete_card":
-            return client.delete_card(arguments["board_id"], arguments["card_id"])
+            return client.delete_card(
+                arguments["board_id"],
+                arguments["card_id"],
+                change_context_from_arguments(arguments),
+            )
         case _:
             raise KeyError(name)

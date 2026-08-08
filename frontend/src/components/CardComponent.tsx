@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Board, Card, Edge } from "../types";
 import * as api from "../api";
 import { isVisualChild } from "../boardLogic.js";
+import CardChangelog from "./CardChangelog";
 
 interface Props {
   card: Card;
@@ -311,6 +312,8 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
                   ))}
                 </div>
               )}
+
+              <CardChangelog boardId={board.id} cardId={card.id} revision={card.updated_at} />
 
               <div className="card-actions">
                 <button onClick={() => {

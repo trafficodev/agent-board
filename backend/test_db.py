@@ -61,8 +61,35 @@ class SchemaTest(unittest.TestCase):
         for name in (
             "boards", "board_remotes", "columns", "cards", "card_labels",
             "card_notes", "card_sessions", "edges", "events",
+            "change_votes",
         ):
             self.assertIn(name, tables)
+
+    def test_event_cutover_columns_exist(self):
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(events)")
+        }
+        self.assertTrue({
+            "projection_version",
+            "document",
+            "provider",
+            "native_session_id",
+            "reviewed_commit_sha",
+            "voteable",
+            "cutover_state",
+        }.issubset(columns))
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()[0],
+            str(db.SCHEMA_VERSION),
+        )
+        indexes = {
+            row["name"]: row["unique"]
+            for row in self.conn.execute("PRAGMA index_list(events)")
+        }
+        self.assertEqual(indexes["idx_events_id"], 1)
 
     def test_wal_and_foreign_keys_are_on(self):
         self.assertEqual(
@@ -157,7 +184,7 @@ class RoundTripTest(unittest.TestCase):
             ],
             session_history=[
                 SessionEntry(
-                    session_id="s1", system="claude", action="created",
+                    claim_id="claim000001", session_id="s1", system="claude", action="created",
                     outcome="success",
                     changes=[FieldChange(field="title", before=None, after="T")],
                 )
@@ -236,6 +263,13 @@ class RoundTripTest(unittest.TestCase):
             type="card_created", detail="d", board_id="board1",
             card_id="card0000001", session_id="s1", system="claude",
             action="created", snapshot={"title": "T"},
+            projection_version=1,
+            document={"title": "T"},
+            provider="codex",
+            native_session_id="native-1",
+            reviewed_commit_sha="a" * 40,
+            voteable=True,
+            cutover_state="authored",
         )
         edge = Edge(
             board_id="board1", from_card_id="card0000001",
@@ -247,7 +281,10 @@ class RoundTripTest(unittest.TestCase):
         conn = db.connect()
         restored_event = db.event_from_row(conn.execute("SELECT * FROM events").fetchone())
         self.assertEqual(restored_event.snapshot, {"title": "T"})
-        self.assertEqual(restored_event.actor, "claude")
+        self.assertEqual(restored_event.document, {"title": "T"})
+        self.assertEqual(restored_event.actor, "codex")
+        self.assertTrue(restored_event.voteable)
+        self.assertEqual(restored_event.reviewed_commit_sha, "a" * 40)
         restored_edge = db.edge_from_row(conn.execute("SELECT * FROM edges").fetchone())
         self.assertEqual(restored_edge.model_dump(mode="json"), edge.model_dump(mode="json"))
 
@@ -342,6 +379,13 @@ class JsonMigrationTest(unittest.TestCase):
         self.assertEqual(
             conn.execute("SELECT COUNT(*) FROM columns").fetchone()[0], 2
         )
+        baselines = conn.execute(
+            "SELECT * FROM events WHERE cutover_state='baseline' ORDER BY card_id"
+        ).fetchall()
+        self.assertEqual([row["card_id"] for row in baselines], ["card0000001", "card0000002"])
+        self.assertTrue(all(row["voteable"] == 0 for row in baselines))
+        self.assertTrue(all(row["reviewed_commit_sha"] == "" for row in baselines))
+        self.assertTrue(all(json.loads(row["document"])["title"] for row in baselines))
 
     def test_remote_url_and_aliases_both_resolve_to_the_board(self):
         self._write_legacy_board()
@@ -414,6 +458,91 @@ class JsonMigrationTest(unittest.TestCase):
         recovered = db.migrate_json_if_needed()
         self.assertTrue(recovered["migrated"])
         self.assertEqual(recovered["boards"], 1)
+
+
+class SqliteCutoverMigrationTest(unittest.TestCase):
+    def setUp(self):
+        self.home = _use_fresh_home()
+        conn = sqlite3.connect(db.db_path())
+        conn.executescript(
+            """
+            CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO schema_meta VALUES ('schema_version', '1');
+            CREATE TABLE boards (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '', remote_url TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE columns (
+                id TEXT PRIMARY KEY, board_id TEXT NOT NULL, name TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE cards (
+                id TEXT PRIMARY KEY, board_id TEXT NOT NULL, external_id TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', column_id TEXT NOT NULL,
+                parent_id TEXT, position INTEGER NOT NULL DEFAULT 0,
+                priority TEXT NOT NULL DEFAULT 'medium', metadata TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL,
+                board_id TEXT NOT NULL DEFAULT '', card_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '', system TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL DEFAULT '', type TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL, snapshot TEXT
+            );
+            CREATE TABLE card_sessions (
+                board_id TEXT NOT NULL, card_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '', system TEXT NOT NULL DEFAULT '',
+                timestamp TEXT NOT NULL, action TEXT NOT NULL DEFAULT '', outcome TEXT,
+                changes TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (card_id, seq)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO boards VALUES (?,?,?,?,?,?)",
+            ("board1", "B", "", "", _NOW, _NOW),
+        )
+        conn.execute("INSERT INTO columns VALUES ('col1','board1','Open',0)")
+        conn.execute(
+            "INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("card1", "board1", "", "Live", "body", "col1", None, 0, "high", "{}", _NOW, _NOW),
+        )
+        conn.execute(
+            "INSERT INTO events (id,board_id,card_id,type,detail,timestamp,snapshot)"
+            " VALUES ('legacy1','board1','card1','card_updated','old',?,?)",
+            (_NOW, json.dumps({"title": "Old"})),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_preserves_legacy_and_creates_one_non_voteable_baseline(self):
+        conn = db.connect()
+        session_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(card_sessions)")
+        }
+        self.assertIn("claim_id", session_columns)
+        legacy = conn.execute("SELECT * FROM events WHERE id='legacy1'").fetchone()
+        self.assertEqual(legacy["cutover_state"], "legacy")
+        self.assertEqual(legacy["voteable"], 0)
+        self.assertIsNone(legacy["document"])
+
+        baseline = conn.execute(
+            "SELECT * FROM events WHERE card_id='card1' AND cutover_state='baseline'"
+        ).fetchall()
+        self.assertEqual(len(baseline), 1)
+        self.assertEqual(json.loads(baseline[0]["document"])["title"], "Live")
+        self.assertEqual(baseline[0]["reviewed_commit_sha"], "")
+        self.assertEqual(baseline[0]["voteable"], 0)
+
+        db.close()
+        db.connect()
+        self.assertEqual(
+            db.connect().execute(
+                "SELECT COUNT(*) FROM events WHERE card_id='card1' AND cutover_state='baseline'"
+            ).fetchone()[0],
+            1,
+        )
 
 
 if __name__ == "__main__":

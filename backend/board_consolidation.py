@@ -11,6 +11,7 @@ import card_history
 import card_store as cs
 import edge_store as es
 import db
+from card_diff import CHANGELOG_PROJECTION_VERSION, canonical_document, snapshot_of
 from models import Board, Card, Column, Edge, Event, _now
 from paths import home
 
@@ -259,6 +260,25 @@ def _build_manifest(source: Board, target: Board) -> dict:
         target.id,
         column_ids,
     )
+    source_card_ids = {card.id for card in source_cards}
+    events.extend(
+        Event(
+            type="card_consolidated",
+            detail=card.title,
+            board_id=target.id,
+            card_id=card.id,
+            system="system",
+            action="consolidated",
+            snapshot=snapshot_of(card),
+            projection_version=CHANGELOG_PROJECTION_VERSION,
+            document=canonical_document(card),
+            provider="system",
+            voteable=False,
+            cutover_state="authored",
+        )
+        for card in cards
+        if card.id in source_card_ids
+    )
 
     source_remotes = _normalized_remotes(source)
     target_remotes = _normalized_remotes(target)
@@ -323,6 +343,10 @@ def _apply_manifest(path: Path, manifest: dict) -> None:
         conn.execute("DELETE FROM cards WHERE board_id=?", (target_id,))
         conn.execute("DELETE FROM edges WHERE board_id=?", (target_id,))
         conn.execute("DELETE FROM events WHERE board_id=?", (target_id,))
+        # Source events retain their immutable IDs after moving to the target.
+        # Release those globally unique IDs inside this transaction before the
+        # merged journal is inserted.
+        conn.execute("DELETE FROM events WHERE board_id=?", (source_id,))
         for entry in manifest["cards"]:
             db.write_card(conn, Card.model_validate(entry))
         for entry in manifest["edges"]:
@@ -332,7 +356,6 @@ def _apply_manifest(path: Path, manifest: dict) -> None:
 
         # The source board goes; its cards and edges follow by foreign key.
         conn.execute("DELETE FROM boards WHERE id=?", (source_id,))
-        conn.execute("DELETE FROM events WHERE board_id=?", (source_id,))
 
         # Aliases are added last, so a crash before this point leaves the
         # target not yet answering for the source's remotes and the manifest

@@ -89,11 +89,7 @@ export default function BoardView({ board, cards, edges, onRefresh, onBoardUpdat
   const sortOptions = aiCards ? [{ value: "ai_relevance", label: "AI relevance" }, ...BOARD_SORTS] : BOARD_SORTS;
 
   useEffect(() => {
-    if (!useBackendSearch) {
-      setBackendSearchCards(null);
-      setSearchError("");
-      return;
-    }
+    if (!useBackendSearch) return;
 
     let cancelled = false;
     void api.searchCards(board.id, {
@@ -127,6 +123,7 @@ export default function BoardView({ board, cards, edges, onRefresh, onBoardUpdat
     }
     return filterCardsForBoard(cards, board.columns, { query: effectiveSearch, priority: priorityFilter, label: labelFilter, sort: sortMode });
   }, [aiCards, backendSearchCards, board.columns, cards, effectiveSearch, labelFilter, priorityFilter, sortMode, useBackendSearch]);
+  const visibleSearchError = useBackendSearch ? searchError : "";
 
   const subTasksByParent = useMemo(() => {
     return groupSameColumnChildren(searchResult.cards) as Map<string, Card[]>;
@@ -430,9 +427,9 @@ export default function BoardView({ board, cards, edges, onRefresh, onBoardUpdat
             )}
           </div>
         )}
-        {(searchError || aiError || aiReasoning || aiCards) && (
-          <div className={`search-status ${searchError || aiError ? "error" : ""}`}>
-            {searchError || aiError || aiReasoning || (aiCards ? `${aiCards.length} AI matches` : "")}
+        {(visibleSearchError || aiError || aiReasoning || aiCards) && (
+          <div className={`search-status ${visibleSearchError || aiError ? "error" : ""}`}>
+            {visibleSearchError || aiError || aiReasoning || (aiCards ? `${aiCards.length} AI matches` : "")}
             {aiCards && <button onClick={clearAiSearch}>Clear AI</button>}
           </div>
         )}

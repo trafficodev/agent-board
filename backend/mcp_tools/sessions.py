@@ -3,6 +3,7 @@
 from mcp.types import Tool
 
 import client
+from mcp_tools.context import CHANGE_CONTEXT_PROPERTIES, change_context_from_arguments
 
 TOOLS = [
     Tool(
@@ -17,6 +18,7 @@ TOOLS = [
                 "system": {"type": "string", "description": "System/agent name"},
                 "action": {"type": "string", "description": "What the session did"},
                 "outcome": {"type": "string", "enum": ["success", "failed", "partial"]},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id", "session_id"],
         },
@@ -47,6 +49,7 @@ TOOLS = [
                 "card_id": {"type": "string"},
                 "text": {"type": "string"},
                 "kind": {"type": "string", "enum": ["note", "question"], "default": "note"},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id", "text"],
         },
@@ -61,6 +64,7 @@ TOOLS = [
                 "card_id": {"type": "string"},
                 "note_id": {"type": "string"},
                 "answer": {"type": "string"},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id", "note_id", "answer"],
         },
@@ -103,6 +107,7 @@ TOOLS = [
                 "board_id": {"type": "string"},
                 "card_id": {"type": "string"},
                 "version": {"type": "integer", "description": "1-based version from get_card_history"},
+                **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id", "version"],
         },
@@ -136,6 +141,7 @@ def dispatch(name: str, arguments: dict):
                 system=arguments.get("system", ""),
                 action=arguments.get("action", ""),
                 outcome=arguments.get("outcome"),
+                change_context=change_context_from_arguments(arguments),
             )
         case "add_card_note":
             return client.add_card_note(
@@ -143,6 +149,7 @@ def dispatch(name: str, arguments: dict):
                 arguments["card_id"],
                 arguments["text"],
                 kind=arguments.get("kind", "note"),
+                change_context=change_context_from_arguments(arguments),
             )
         case "answer_card_question":
             return client.answer_card_question(
@@ -150,6 +157,7 @@ def dispatch(name: str, arguments: dict):
                 arguments["card_id"],
                 arguments["note_id"],
                 arguments["answer"],
+                change_context=change_context_from_arguments(arguments),
             )
         case "list_open_questions":
             return client.open_questions(arguments.get("board_id", ""))
@@ -166,6 +174,7 @@ def dispatch(name: str, arguments: dict):
                 arguments["board_id"],
                 arguments["card_id"],
                 arguments["version"],
+                change_context=change_context_from_arguments(arguments),
             )
         case "get_session_activity":
             return client.get_session_activity(

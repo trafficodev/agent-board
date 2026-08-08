@@ -5,8 +5,9 @@ import unittest
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-hist-test-")
 
 import board_store
+import card_history
 import card_store
-from models import CreateCard, MoveCard, UpdateCard
+from models import ChangeContext, CreateCard, MoveCard, UpdateCard
 
 
 class CardHistoryTest(unittest.TestCase):
@@ -88,13 +89,16 @@ class CardHistoryTest(unittest.TestCase):
         self.assertEqual([e.action for e in reread.session_history], ["created", "updated"])
         self.assertEqual(reread.session_history[-1].changes[0].after, "two")
 
-    def test_unknown_session_is_recorded_as_empty_not_guessed(self):
+    def test_direct_store_call_uses_explicit_non_voteable_system_context(self):
         os.environ.pop("BETTER_AGENT_APP_SESSION_ID", None)
         os.environ.pop("BETTER_CLAUDE_APP_SESSION_ID", None)
 
         card = self._card()
 
         self.assertEqual(card.session_history[0].session_id, "")
+        event = card_history.read_events(self.board.id)[-1]
+        self.assertFalse(event.voteable)
+        self.assertEqual(event.provider, "system")
 
     def test_long_values_are_truncated_so_history_stays_small(self):
         card = self._card(body="x")
@@ -126,35 +130,100 @@ class CardHistoryTest(unittest.TestCase):
         self.assertNotIn("metadata", fields)
 
 
-class RequestSessionAttributionTest(unittest.TestCase):
-    """The API server is shared and belongs to no session, so HTTP callers
-    carry their identity in a header that the store reads per request."""
+class RequestChangeContextTest(unittest.TestCase):
 
     def setUp(self):
         os.environ.pop("BETTER_CLAUDE_APP_SESSION_ID", None)
         os.environ.pop("BETTER_AGENT_APP_SESSION_ID", None)
         self.board = board_store.create_board("R", "", ["Open"])
 
-    def test_request_session_is_used_when_the_process_has_none(self):
-        token = card_store.request_session.set("sess-http")
+    def test_authored_context_is_stored_on_every_new_event(self):
+        context = ChangeContext.authored("codex", "sess-http", "a" * 40)
+        token = card_store.request_change_context.set(context)
         try:
             card = card_store.create_card(
                 self.board.id, CreateCard(title="via api", column_id=self.board.columns[0].id)
             )
+            card_store.update_card(self.board.id, card.id, UpdateCard(body="changed"))
+            card_store.delete_card(self.board.id, card.id)
         finally:
-            card_store.request_session.reset(token)
+            card_store.request_change_context.reset(token)
 
-        self.assertEqual(card.session_history[0].session_id, "sess-http")
+        events = [
+            event
+            for event in card_history.read_events(self.board.id)
+            if event.card_id == card.id
+        ]
+        self.assertEqual(len(events), 3)
+        for event in events:
+            self.assertEqual(event.provider, "codex")
+            self.assertEqual(event.native_session_id, "sess-http")
+            self.assertEqual(event.reviewed_commit_sha, "a" * 40)
+            self.assertTrue(event.voteable)
+            self.assertEqual(event.cutover_state, "authored")
+        self.assertIsNotNone(events[0].document)
+        self.assertIsNotNone(events[1].document)
+        self.assertIsNone(events[2].document)
 
-    def test_request_session_wins_over_process_env(self):
+    def test_request_context_wins_over_legacy_process_env(self):
         os.environ["BETTER_AGENT_APP_SESSION_ID"] = "sess-env"
-        token = card_store.request_session.set("sess-http")
+        context = ChangeContext.authored("codex", "sess-http", "b" * 40)
+        token = card_store.request_change_context.set(context)
         try:
             card = card_store.create_card(
                 self.board.id, CreateCard(title="both", column_id=self.board.columns[0].id)
             )
         finally:
-            card_store.request_session.reset(token)
+            card_store.request_change_context.reset(token)
             os.environ.pop("BETTER_AGENT_APP_SESSION_ID", None)
 
         self.assertEqual(card.session_history[0].session_id, "sess-http")
+
+    def test_changelog_projects_only_voteable_authored_diffs(self):
+        context = ChangeContext.authored("codex", "sess-http", "c" * 40)
+        token = card_store.request_change_context.set(context)
+        try:
+            card = card_store.create_card(
+                self.board.id,
+                CreateCard(title="created", body="one", column_id=self.board.columns[0].id),
+            )
+            card_store.update_card(self.board.id, card.id, UpdateCard(body="two"))
+        finally:
+            card_store.request_change_context.reset(token)
+
+        items = card_history.card_change_items(self.board.id, card.id)
+
+        self.assertEqual(items[-1].path, "/body")
+        self.assertEqual(items[-1].operation, "replace")
+        self.assertIn("-one", items[-1].diff)
+        self.assertIn("+two", items[-1].diff)
+        self.assertEqual(items[-1].commit_sha, "c" * 40)
+        self.assertIsNotNone(items[-1].timestamp)
+
+    def test_non_voteable_events_advance_state_without_creating_items(self):
+        authored = ChangeContext.authored("codex", "sess-http", "d" * 40)
+        token = card_store.request_change_context.set(authored)
+        try:
+            card = card_store.create_card(
+                self.board.id,
+                CreateCard(title="created", body="one", column_id=self.board.columns[0].id),
+            )
+        finally:
+            card_store.request_change_context.reset(token)
+
+        card_store.update_card(self.board.id, card.id, UpdateCard(body="system"))
+        token = card_store.request_change_context.set(authored)
+        try:
+            card_store.update_card(self.board.id, card.id, UpdateCard(body="authored"))
+        finally:
+            card_store.request_change_context.reset(token)
+
+        items = card_history.card_change_items(self.board.id, card.id)
+        body_items = [
+            item
+            for item in items
+            if item.path == "/body" and item.operation == "replace"
+        ]
+        self.assertEqual(len(body_items), 1)
+        self.assertIn("-system", body_items[0].diff)
+        self.assertIn("+authored", body_items[0].diff)

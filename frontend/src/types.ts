@@ -62,6 +62,24 @@ export interface Event {
   detail: string;
 }
 
+export interface ChangeVoteSummary {
+  up: number;
+  down: number;
+  current: -1 | 1 | null;
+}
+
+export interface CardChangeItem {
+  id: string;
+  event_id: string;
+  projection_version: number;
+  ordinal: number;
+  path: string;
+  operation: "add" | "remove" | "replace";
+  diff: string;
+  commit_sha: string;
+  votes: ChangeVoteSummary;
+}
+
 export interface CanvasSyncStatus {
   enabled: boolean;
   canvas_board_id: string | null;

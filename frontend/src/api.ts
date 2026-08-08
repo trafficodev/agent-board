@@ -1,11 +1,45 @@
-import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, Column, Edge, Event } from "./types";
+import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, CardChangeItem, ChangeVoteSummary, Column, Edge, Event } from "./types";
 
 const BASE = "/api";
 
+const IDENTITY_KEY = "agent-board-browser-session";
+
+function browserSessionId(): string {
+  const existing = localStorage.getItem(IDENTITY_KEY);
+  if (existing) return existing;
+  const created = crypto.randomUUID();
+  localStorage.setItem(IDENTITY_KEY, created);
+  return created;
+}
+
+function identityHeaders(commitSha = ""): Record<string, string> {
+  return {
+    "X-Agent-Board-Provider": "browser",
+    "X-Agent-Board-Session": browserSessionId(),
+    ...(commitSha ? { "X-Agent-Board-Commit": commitSha } : {}),
+  };
+}
+
+export async function getCurrentRevision(): Promise<string> {
+  const response = await fetch(`${BASE}/revision`);
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  const revision = await response.json() as { commit_sha: string };
+  return revision.commit_sha;
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+  const method = (opts?.method ?? "GET").toUpperCase();
+  const headers = new Headers(opts?.headers);
+  headers.set("Content-Type", "application/json");
+  const isCardMutation = ["POST", "PATCH", "DELETE"].includes(method)
+    && /^\/boards\/[0-9a-f]{12}\/cards(?:\/|$)/.test(path);
+  if (isCardMutation && !headers.has("X-Agent-Board-Commit")) {
+    const commitSha = await getCurrentRevision();
+    for (const [key, value] of Object.entries(identityHeaders(commitSha))) headers.set(key, value);
+  }
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
@@ -48,6 +82,27 @@ export const deleteCard = (boardId: string, cardId: string) =>
   req<{ ok: boolean }>(`/boards/${boardId}/cards/${cardId}`, { method: "DELETE" });
 export const addSession = (boardId: string, cardId: string, data: { session_id: string; system?: string; action?: string; outcome?: string | null }) =>
   req<Card>(`/boards/${boardId}/cards/${cardId}/sessions`, { method: "POST", body: JSON.stringify(data) });
+
+export const getCardChanges = (boardId: string, cardId: string, offset = 0, limit = 100) =>
+  req<{ card_id: string; count: number; items: CardChangeItem[]; next_offset: number | null }>(
+    `/boards/${boardId}/cards/${cardId}/changes?offset=${offset}&limit=${limit}`,
+    { headers: identityHeaders() },
+  );
+
+export const setChangeVote = (
+  boardId: string,
+  cardId: string,
+  targetId: string,
+  direction: -1 | 1,
+  commitSha: string,
+) => req<{ summary: ChangeVoteSummary }>(
+  `/boards/${boardId}/cards/${cardId}/changes/${targetId}/vote`,
+  {
+    method: "POST",
+    headers: identityHeaders(commitSha),
+    body: JSON.stringify({ direction }),
+  },
+);
 
 // Events
 export const getEvents = (boardId: string) => req<Event[]>(`/boards/${boardId}/events`);

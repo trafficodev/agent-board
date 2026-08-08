@@ -5,7 +5,7 @@ import hashlib
 import re
 
 import db
-from models import Board, Column, Event, _now, _uid
+from models import Board, Column, Event, _now
 from paths import ensure_lock_path
 
 _SCP_LIKE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
@@ -231,6 +231,11 @@ def delete_board(board_id: str) -> bool:
         # Columns, cards and edges follow the board by foreign key. The journal
         # deliberately has no key to the board -- it outlives cards -- so it is
         # cleared here, matching the old delete of the board's events file.
+        conn.execute(
+            "DELETE FROM change_votes WHERE event_id IN"
+            " (SELECT id FROM events WHERE board_id=?)",
+            (board_id,),
+        )
         conn.execute("DELETE FROM events WHERE board_id=?", (board_id,))
         return True
 

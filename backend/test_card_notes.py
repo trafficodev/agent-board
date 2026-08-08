@@ -8,8 +8,10 @@ from unittest.mock import MagicMock, patch
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-notes-test-")
 
 import board_store
+import card_history
 import card_store
-from models import AddNote, AnswerNote, CreateCard, UpdateCard
+from card_diff import project_change_items
+from models import AddNote, AddSession, AnswerNote, CreateCard, UpdateCard
 
 
 class CardNotesTest(unittest.TestCase):
@@ -104,6 +106,95 @@ class CardNotesTest(unittest.TestCase):
         reread = card_store.get_card(self.board.id, self.card.id)
 
         self.assertEqual(reread.notes[-1].text, "persisted?")
+
+    def test_nested_entity_events_keep_post_mutation_canonical_documents(self):
+        asked = card_store.add_note(
+            self.board.id,
+            self.card.id,
+            AddNote(kind="question", text="ship it?"),
+        )
+        note_id = asked.notes[-1].id
+        card_store.answer_note(
+            self.board.id,
+            self.card.id,
+            note_id,
+            AnswerNote(answer="yes", answered_by="reviewer"),
+        )
+        card_store.add_session(
+            self.board.id,
+            self.card.id,
+            AddSession(
+                session_id="worker",
+                system="codex",
+                action="implemented",
+                outcome="success",
+            ),
+        )
+        card_store.update_card(
+            self.board.id,
+            self.card.id,
+            UpdateCard(title="renamed"),
+        )
+
+        events = [
+            event
+            for event in card_history.read_events(self.board.id)
+            if event.card_id == self.card.id
+        ]
+        created, asked_event, answered_event, claim_event, renamed = events
+        self.assertEqual(created.document["questions"], {})
+        self.assertEqual(
+            asked_event.document["questions"],
+            {note_id: {"text": "ship it?"}},
+        )
+        self.assertEqual(
+            answered_event.document["answers"],
+            {note_id: {"text": "yes"}},
+        )
+        claim_id = next(iter(claim_event.document["claims"]))
+        self.assertEqual(
+            claim_event.document["claims"][claim_id]["action"],
+            "implemented",
+        )
+        self.assertEqual(renamed.document["claims"], claim_event.document["claims"])
+
+        self.assertEqual(
+            [item.path for item in project_change_items(
+                answered_event.id,
+                asked_event.document,
+                answered_event.document,
+            )],
+            [f"/answers/{note_id}/text"],
+        )
+
+    def test_explicit_claims_are_not_evicted_with_generated_history(self):
+        with patch.object(card_store, "_HISTORY_LIMIT", 3):
+            claimed = card_store.add_session(
+                self.board.id,
+                self.card.id,
+                AddSession(session_id="worker", action="implemented"),
+            )
+            claim_id = next(
+                entry.claim_id for entry in claimed.session_history if entry.claim_id
+            )
+            for index in range(8):
+                card_store.update_card(
+                    self.board.id,
+                    self.card.id,
+                    UpdateCard(body=str(index)),
+                )
+
+            reread = card_store.get_card(self.board.id, self.card.id)
+        claims = [entry for entry in reread.session_history if entry.claim_id]
+        generated = [entry for entry in reread.session_history if not entry.claim_id]
+        self.assertEqual([entry.claim_id for entry in claims], [claim_id])
+        self.assertEqual(len(generated), 3)
+
+        latest_event = [
+            event for event in card_history.read_events(self.board.id)
+            if event.card_id == self.card.id
+        ][-1]
+        self.assertIn(claim_id, latest_event.document["claims"])
 
 
 if __name__ == "__main__":

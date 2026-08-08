@@ -4,6 +4,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import client
+from models import (
+    CHANGE_NATIVE_SESSION_ENV,
+    CHANGE_PROVIDER_ENV,
+    CHANGE_REVIEWED_COMMIT_ENV,
+)
 
 
 class ClientStartupTest(unittest.TestCase):
@@ -135,6 +140,29 @@ class ClientStartupTest(unittest.TestCase):
 
         is_running.assert_called_once_with()
         self.assertEqual(client._ready_url, client._normalized_base_url())
+
+    def test_authored_card_write_fails_before_http_without_complete_context(self):
+        with patch.dict(client.os.environ, {}, clear=True), patch.object(client, "_req") as request:
+            with self.assertRaisesRegex(ValueError, "provider must be"):
+                client.create_card("board", "T", "column")
+
+        request.assert_not_called()
+
+    def test_authored_card_write_forwards_canonical_context(self):
+        environ = {
+            CHANGE_PROVIDER_ENV: "codex",
+            CHANGE_NATIVE_SESSION_ENV: "native-1",
+            CHANGE_REVIEWED_COMMIT_ENV: "a" * 40,
+        }
+        with patch.dict(client.os.environ, environ, clear=True), patch.object(
+            client, "_req", return_value={}
+        ) as request:
+            client.create_card("board", "T", "column")
+
+        context = request.call_args.args[3]
+        self.assertEqual(context.provider, "codex")
+        self.assertEqual(context.native_session_id, "native-1")
+        self.assertEqual(context.reviewed_commit_sha, "a" * 40)
 
 if __name__ == "__main__":
     unittest.main()
