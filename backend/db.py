@@ -34,9 +34,10 @@ from models import (
     FieldChange,
     SessionEntry,
 )
+from card_semantics import CardSemantics
 from paths import home
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Which caller each index serves. Kept next to the DDL so an index cannot
 # quietly outlive the query that justified it.
@@ -55,6 +56,7 @@ INDEX_NOTES = {
     "idx_card_sessions_card": "card hydration",
     "idx_edges_from": "list_edges(card_id), DAG ordering",
     "idx_edges_to": "list_edges(card_id) reverse direction",
+    "idx_edges_unique": "one directional relationship of each type per card pair",
     "idx_events_board_seq": "get_events tail",
     "idx_events_id": "stable changelog target identity (unique)",
     "idx_events_card": "get_card_history, revert_card",
@@ -109,6 +111,7 @@ CREATE TABLE IF NOT EXISTS cards (
     position    INTEGER NOT NULL DEFAULT 0,
     priority    TEXT NOT NULL DEFAULT 'medium',
     metadata    TEXT NOT NULL DEFAULT '{}',
+    semantics   TEXT NOT NULL DEFAULT '{}',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -282,6 +285,10 @@ def connect() -> sqlite3.Connection:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_baseline_card"
         " ON events(card_id) WHERE cutover_state='baseline'"
     )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique"
+        " ON edges(board_id, from_card_id, to_card_id, type)"
+    )
     _local.conn = conn
     _local.path = path
     _local.depth = 0
@@ -304,7 +311,7 @@ def _migrate_schema(conn: sqlite3.Connection, stored_version: int) -> None:
         raise RuntimeError(
             f"Database schema {stored_version} is newer than supported schema {SCHEMA_VERSION}"
         )
-    migrations = {1: _migrate_schema_1_to_2}
+    migrations = {1: _migrate_schema_1_to_2, 2: _migrate_schema_2_to_3}
     version = stored_version
     while version < SCHEMA_VERSION:
         migration = migrations.get(version)
@@ -347,6 +354,30 @@ def _migrate_schema_1_to_2(conn: sqlite3.Connection) -> None:
             "ALTER TABLE card_sessions ADD COLUMN claim_id TEXT NOT NULL DEFAULT ''"
         )
     _write_cutover_baselines(conn)
+
+
+def _migrate_schema_2_to_3(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(cards)")}
+    if "semantics" not in columns:
+        conn.execute(
+            "ALTER TABLE cards ADD COLUMN semantics TEXT NOT NULL DEFAULT '{}'"
+        )
+    conn.execute("UPDATE edges SET type='verifies' WHERE type='tests'")
+    conn.execute("UPDATE edges SET type='depends_on' WHERE type='blocked_by'")
+    blocking = conn.execute(
+        "SELECT id, from_card_id, to_card_id FROM edges WHERE type='blocks'"
+    ).fetchall()
+    for edge in blocking:
+        conn.execute(
+            "UPDATE edges SET from_card_id=?, to_card_id=?, type='depends_on' WHERE id=?",
+            (edge["to_card_id"], edge["from_card_id"], edge["id"]),
+        )
+    conn.execute(
+        "DELETE FROM edges WHERE rowid NOT IN ("
+        " SELECT MIN(rowid) FROM edges"
+        " GROUP BY board_id, from_card_id, to_card_id, type"
+        ")"
+    )
 
 
 def close() -> None:
@@ -445,6 +476,9 @@ def card_from_rows(
         priority=row["priority"],
         labels=labels,
         metadata=json.loads(row["metadata"]),
+        semantics=CardSemantics(
+            **json.loads(row["semantics"] if "semantics" in row.keys() else "{}")
+        ),
         session_history=sessions,
         notes=notes,
         created_at=_dt(row["created_at"]),
@@ -521,19 +555,21 @@ def write_card(conn: sqlite3.Connection, card: Card) -> None:
     conn.execute(
         """INSERT INTO cards
                (id, board_id, external_id, title, body, column_id, parent_id,
-                position, priority, metadata, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                position, priority, metadata, semantics, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
                board_id=excluded.board_id,
                external_id=excluded.external_id, title=excluded.title,
                body=excluded.body, column_id=excluded.column_id,
                parent_id=excluded.parent_id, position=excluded.position,
                priority=excluded.priority, metadata=excluded.metadata,
+               semantics=excluded.semantics,
                updated_at=excluded.updated_at""",
         (
             card.id, card.board_id, card.external_id, card.title, card.body,
             card.column_id, card.parent_id, card.position, card.priority,
             json.dumps(card.metadata, default=str),
+            json.dumps(card.semantics.sparse_dump(), default=str),
             card.created_at.isoformat(), card.updated_at.isoformat(),
         ),
     )

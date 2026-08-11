@@ -5,7 +5,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 
+import card_history
 import db
+from card_semantics import CardSemantics, valid_semantic_parent
 from models import (
     AddNote,
     AddSession,
@@ -22,7 +24,6 @@ from models import (
     new_id,
     _now,
 )
-import card_history
 from board_store import get_board
 from card_diff import (
     CHANGELOG_PROJECTION_VERSION,
@@ -403,6 +404,14 @@ def apply_create(tx: _Transaction, board_id: str, data: CreateCard) -> Card | No
     board = get_board(board_id)
     if not board or data.column_id not in [c.id for c in board.columns]:
         return None
+    parent = next((card for card in tx.cards if card.id == data.parent_id), None)
+    if data.parent_id and parent is None:
+        return None
+    if data.semantics.kind and not valid_semantic_parent(
+        data.semantics,
+        parent.semantics if parent else None,
+    ):
+        return None
 
     now = _now()
     col_cards = [c for c in tx.cards if c.column_id == data.column_id]
@@ -420,6 +429,7 @@ def apply_create(tx: _Transaction, board_id: str, data: CreateCard) -> Card | No
         priority=data.priority,
         labels=[l.lower() for l in data.labels],
         metadata=data.metadata,
+        semantics=data.semantics,
     )
     _stamp_closed_state(card, _closed_column_id(board_id), now)
     tx.record(_record(card, "created", {}, "card_created"))
@@ -449,6 +459,7 @@ def _matches_upsert(card: Card, data: CreateCard) -> bool:
         and card.priority == data.priority
         and card.labels == [label.lower() for label in data.labels]
         and metadata == data.metadata
+        and card.semantics == data.semantics
     )
 
 
@@ -494,6 +505,18 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
         if any(c.id == data.parent_id for c in _collect_descendants(tx.cards, card_id)):
             return None
 
+    final_parent_id = data.parent_id if "parent_id" in data.model_fields_set else card.parent_id
+    final_parent = next((c for c in tx.cards if c.id == final_parent_id), None)
+    final_semantics = data.semantics if data.semantics is not None else card.semantics
+    if final_semantics.kind and not valid_semantic_parent(
+        final_semantics,
+        final_parent.semantics if final_parent else None,
+    ):
+        return None
+    for child in (candidate for candidate in tx.cards if candidate.parent_id == card_id):
+        if child.semantics.kind and not valid_semantic_parent(child.semantics, final_semantics):
+            return None
+
     closed_column_id = _closed_column_id(board_id)
     now = _now()
     before = _snapshot(card)
@@ -521,6 +544,8 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
         card.metadata = dict(data.metadata)
         if existing_closed_at is not None and card.column_id == closed_column_id:
             card.metadata[CLOSED_AT_METADATA_KEY] = existing_closed_at
+    if data.semantics is not None:
+        card.semantics = data.semantics
 
     if col_changed or data.position is not None:
         _reindex_column(board_id, tx.cards, card.column_id, tx.edges)
@@ -804,11 +829,25 @@ def revert_card(board_id: str, card_id: str, data: RevertCard) -> Card | None:
         if not board or target_column not in [c.id for c in board.columns]:
             return None
         target_parent = target.get("parent_id")
+        parent_card = None
         if target_parent:
             # The old parent may be gone, or may since have become this card's
             # own descendant -- restoring either one would corrupt the tree.
             descendants = {c.id for c in _collect_descendants(tx.cards, card_id)}
             if not any(c.id == target_parent for c in tx.cards) or target_parent in descendants:
+                return None
+            parent_card = next(c for c in tx.cards if c.id == target_parent)
+        target_semantics = CardSemantics(**target.get("semantics", {}))
+        if target_semantics.kind and not valid_semantic_parent(
+            target_semantics,
+            parent_card.semantics if parent_card else None,
+        ):
+            return None
+        for child in (candidate for candidate in tx.cards if candidate.parent_id == card_id):
+            if child.semantics.kind and not valid_semantic_parent(
+                child.semantics,
+                target_semantics,
+            ):
                 return None
 
         before = _snapshot(card)
@@ -822,6 +861,7 @@ def revert_card(board_id: str, card_id: str, data: RevertCard) -> Card | None:
         card.labels = list(target["labels"])
         card.external_id = target["external_id"]
         card.metadata = dict(target["metadata"])
+        card.semantics = target_semantics
         if closed_at is not None and card.column_id == _closed_column_id(board_id):
             card.metadata[CLOSED_AT_METADATA_KEY] = closed_at
 

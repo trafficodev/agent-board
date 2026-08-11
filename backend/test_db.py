@@ -20,6 +20,7 @@ from models import (
     FieldChange,
     SessionEntry,
 )
+from card_semantics import CardEvidence, CardOwnership, CardSemantics
 
 
 def _use_fresh_home() -> Path:
@@ -56,6 +57,31 @@ class SchemaTest(unittest.TestCase):
         for name in created:
             self.assertIn(name, db.INDEX_NOTES, f"{name} exists with no recorded caller")
 
+    def test_edge_identity_is_unique(self):
+        with db.transaction() as conn:
+            _seed_board(conn, "board1")
+            conn.execute(
+                "INSERT INTO cards (id,board_id,title,column_id,created_at,updated_at)"
+                " VALUES ('card0000001','board1','A','col1',?,?)",
+                (_NOW, _NOW),
+            )
+            conn.execute(
+                "INSERT INTO cards (id,board_id,title,column_id,created_at,updated_at)"
+                " VALUES ('card0000002','board1','B','col1',?,?)",
+                (_NOW, _NOW),
+            )
+            conn.execute(
+                "INSERT INTO edges VALUES ('edge1','board1','card0000001',"
+                " 'card0000002','depends_on','',?)",
+                (_NOW,),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO edges VALUES ('edge2','board1','card0000001',"
+                    " 'card0000002','depends_on','',?)",
+                    (_NOW,),
+                )
+
     def test_core_tables_exist(self):
         tables = self._names("table")
         for name in (
@@ -90,6 +116,12 @@ class SchemaTest(unittest.TestCase):
             for row in self.conn.execute("PRAGMA index_list(events)")
         }
         self.assertEqual(indexes["idx_events_id"], 1)
+
+    def test_card_semantics_column_exists(self):
+        columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(cards)")
+        }
+        self.assertIn("semantics", columns)
 
     def test_wal_and_foreign_keys_are_on(self):
         self.assertEqual(
@@ -178,6 +210,14 @@ class RoundTripTest(unittest.TestCase):
             priority="critical",
             labels=["alpha", "beta"],
             metadata={"files": ["a.py"], "nested": {"k": 1}},
+            semantics=CardSemantics(
+                kind="requirement",
+                catalog_lifecycle="active",
+                outcome="Users can inspect state",
+                acceptance_criteria=["State is current"],
+                ownership=CardOwnership(component="storage"),
+                evidence=[CardEvidence(kind="test", locator="backend/test_db.py")],
+            ),
             notes=[
                 CardNote(kind="question", text="why?"),
                 CardNote(kind="note", text="because"),
@@ -518,6 +558,14 @@ class SqliteCutoverMigrationTest(unittest.TestCase):
 
     def test_migration_preserves_legacy_and_creates_one_non_voteable_baseline(self):
         conn = db.connect()
+        card_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(cards)")
+        }
+        self.assertIn("semantics", card_columns)
+        self.assertEqual(
+            conn.execute("SELECT semantics FROM cards WHERE id='card1'").fetchone()[0],
+            "{}",
+        )
         session_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(card_sessions)")
         }

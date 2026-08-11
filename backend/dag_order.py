@@ -9,10 +9,10 @@ import heapq
 
 from models import Card, Edge
 
-# The only two edge types that express "must come first". Every other type
-# (duplicates, relates_to, …) carries no ordering meaning.
+# Legacy blocking edges remain readable; new writes use dependent -> dependency.
 _BLOCKS = "blocks"  # from blocks to      -> from first
 _BLOCKED_BY = "blocked_by"  # from blocked by to -> to first
+_DEPENDS_ON = "depends_on"  # from depends on to -> to first
 
 
 def _normalized_type(edge_type: str) -> str:
@@ -29,6 +29,8 @@ def dependency_pairs(edges: list[Edge], card_ids) -> set[tuple[str, str]]:
         if kind == _BLOCKS:
             before, after = edge.from_card_id, edge.to_card_id
         elif kind == _BLOCKED_BY:
+            before, after = edge.to_card_id, edge.from_card_id
+        elif kind == _DEPENDS_ON:
             before, after = edge.to_card_id, edge.from_card_id
         else:
             continue

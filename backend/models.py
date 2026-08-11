@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal, Mapping
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
+from card_semantics import CardSemantics, RelationshipType
+
 
 CHANGE_PROVIDER_HEADER = "X-Agent-Board-Provider"
 CHANGE_NATIVE_SESSION_HEADER = "X-Agent-Board-Session"
@@ -95,6 +97,7 @@ class Card(BaseModel):
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    semantics: CardSemantics = Field(default_factory=CardSemantics)
     session_history: list[SessionEntry] = Field(default_factory=list)
     notes: list[CardNote] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)
@@ -350,6 +353,7 @@ class CreateCard(BaseModel):
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    semantics: CardSemantics = Field(default_factory=CardSemantics)
 
 
 class UpdateCard(BaseModel):
@@ -362,6 +366,7 @@ class UpdateCard(BaseModel):
     priority: Literal["critical", "high", "medium", "low"] | None = None
     labels: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    semantics: CardSemantics | None = None
 
 
 class MoveCard(BaseModel):
@@ -412,6 +417,7 @@ class BulkCreate(BaseModel):
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     labels: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    semantics: CardSemantics = Field(default_factory=CardSemantics)
 
 
 class BulkUpdate(BaseModel):
@@ -426,6 +432,7 @@ class BulkUpdate(BaseModel):
     priority: Literal["critical", "high", "medium", "low"] | None = None
     labels: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    semantics: CardSemantics | None = None
 
 
 class BulkMove(BaseModel):
@@ -476,5 +483,5 @@ class BulkCardsResult(BaseModel):
 class CreateEdge(BaseModel):
     from_card_id: str
     to_card_id: str
-    type: str = "relates_to"
+    type: RelationshipType
     label: str = ""

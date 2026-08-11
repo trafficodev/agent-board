@@ -16,7 +16,8 @@ from models import CardChangeItem, FieldChange
 # it is a view concern owned by column reindexing, not something a session
 # authored.
 TRACKED_CARD_FIELDS = (
-    "title", "body", "column_id", "parent_id", "priority", "labels", "metadata", "external_id",
+    "title", "body", "column_id", "parent_id", "priority", "labels", "metadata",
+    "semantics", "external_id",
 )
 
 # Cap for values copied onto the card's own history projection. The journal is
@@ -38,6 +39,8 @@ def snapshot_of(card, exclude_metadata_keys: tuple[str, ...] = ()) -> dict[str, 
                 k: v for k, v in dict(value or {}).items()
                 if k not in exclude_metadata_keys
             }
+        elif field == "semantics":
+            value = value.sparse_dump() if value else {}
         snapshot[field] = value
     return snapshot
 

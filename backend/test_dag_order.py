@@ -21,13 +21,14 @@ def _titles(board_id: str, column_id: str) -> list[str]:
     return [c.title for c in card_store.list_cards(board_id, column_id=column_id)]
 
 
-def _block(board_id: str, blocker, blocked, type: str = "blocks"):
-    if type == "blocks":
-        return edge_store.create_edge(
-            board_id, CreateEdge(from_card_id=blocker.id, to_card_id=blocked.id, type="blocks"),
-        )
+def _block(board_id: str, blocker, blocked):
     return edge_store.create_edge(
-        board_id, CreateEdge(from_card_id=blocked.id, to_card_id=blocker.id, type="blocked_by"),
+        board_id,
+        CreateEdge(
+            from_card_id=blocked.id,
+            to_card_id=blocker.id,
+            type="depends_on",
+        ),
     )
 
 
@@ -39,9 +40,9 @@ class DagOrderTest(unittest.TestCase):
         _block(board.id, blocker=b, blocked=a)
         self.assertEqual(_titles(board.id, column_id), ["B", "A"])
 
-    def test_blocked_by_edge_points_the_same_way(self):
+    def test_depends_on_points_from_dependent_to_dependency(self):
         board, column_id, (a, b) = _backlog_board("A", "B")
-        _block(board.id, blocker=b, blocked=a, type="blocked_by")
+        _block(board.id, blocker=b, blocked=a)
         self.assertEqual(_titles(board.id, column_id), ["B", "A"])
 
     def test_only_the_blocked_card_moves(self):
@@ -57,15 +58,18 @@ class DagOrderTest(unittest.TestCase):
         _block(board.id, blocker=c, blocked=b)
         self.assertEqual(_titles(board.id, column_id), ["C", "B", "A"])
 
-    def test_cycle_keeps_every_card(self):
+    def test_cycle_is_rejected_without_losing_cards(self):
         board, column_id, (a, b) = _backlog_board("A", "B")
-        _block(board.id, blocker=a, blocked=b)
-        _block(board.id, blocker=b, blocked=a)
+        self.assertIsNotNone(_block(board.id, blocker=a, blocked=b))
+        self.assertIsNone(_block(board.id, blocker=b, blocked=a))
         self.assertEqual(sorted(_titles(board.id, column_id)), ["A", "B"])
 
     def test_non_blocking_edge_types_do_not_reorder(self):
         board, column_id, (a, b) = _backlog_board("A", "B")
-        edge_store.create_edge(board.id, CreateEdge(from_card_id=b.id, to_card_id=a.id, type="relates_to"))
+        edge_store.create_edge(
+            board.id,
+            CreateEdge(from_card_id=b.id, to_card_id=a.id, type="supersedes"),
+        )
         self.assertEqual(_titles(board.id, column_id), ["A", "B"])
 
     def test_deleting_the_edge_leaves_the_resolved_order_in_place(self):

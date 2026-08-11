@@ -16,7 +16,9 @@ import card_projection
 import card_store
 import main
 import paths
-from models import CreateCard, UpdateCard
+import edge_store
+from card_semantics import CardEvidence, CardSemantics
+from models import CreateCard, CreateEdge, UpdateCard
 
 
 class CardProjectionApiTest(unittest.TestCase):
@@ -111,6 +113,73 @@ class CardProjectionApiTest(unittest.TestCase):
         self.assertIn(
             "id", card_projection.resolve_card_fields("list_cards", exclude="id")
         )
+
+    def test_coverage_is_derived_for_requirements_and_catalog_rollups(self):
+        area = card_store.create_card(
+            self.board.id,
+            CreateCard(
+                title="Area",
+                column_id=self.column_id,
+                semantics=CardSemantics(kind="product_area", catalog_lifecycle="active"),
+            ),
+        )
+        feature = card_store.create_card(
+            self.board.id,
+            CreateCard(
+                title="Feature",
+                column_id=self.column_id,
+                parent_id=area.id,
+                semantics=CardSemantics(kind="feature", catalog_lifecycle="active"),
+            ),
+        )
+        requirement = card_store.create_card(
+            self.board.id,
+            CreateCard(
+                title="Requirement",
+                column_id=self.column_id,
+                parent_id=feature.id,
+                semantics=CardSemantics(
+                    kind="requirement",
+                    outcome="Coverage is visible",
+                    acceptance_criteria=["Coverage is derived"],
+                    evidence=[CardEvidence(kind="source", locator="backend/main.py")],
+                ),
+            ),
+        )
+
+        before = self.client.get(
+            self.path,
+            params={"limit": 100, "include": "coverage"},
+        ).json()["items"]
+        before_by_id = {item["id"]: item for item in before}
+        self.assertEqual(before_by_id[requirement.id]["coverage"], "implemented")
+        self.assertEqual(before_by_id[feature.id]["coverage"], "implemented")
+        self.assertEqual(before_by_id[area.id]["coverage"], "implemented")
+
+        test_card = card_store.create_card(
+            self.board.id,
+            CreateCard(
+                title="Evidence",
+                column_id=self.column_id,
+                semantics=CardSemantics(kind="test"),
+            ),
+        )
+        edge_store.create_edge(
+            self.board.id,
+            CreateEdge(
+                from_card_id=test_card.id,
+                to_card_id=requirement.id,
+                type="verifies",
+            ),
+        )
+        after = self.client.get(
+            self.path,
+            params={"limit": 100, "include": "coverage"},
+        ).json()["items"]
+        after_by_id = {item["id"]: item for item in after}
+        self.assertEqual(after_by_id[requirement.id]["coverage"], "verified")
+        self.assertEqual(after_by_id[feature.id]["coverage"], "verified")
+        self.assertEqual(after_by_id[area.id]["coverage"], "verified")
 
     def test_projection_rejects_unknown_fields_and_malformed_wildcards(self):
         for values in ("unknown", "title,*suffix", ["title", 7]):

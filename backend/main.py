@@ -391,6 +391,10 @@ def api_list_cards(
 ):
     _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id, priority=priority, label=label, column_id=column_id, parent_id=parent_id)]
+    coverage = card_projection.coverage_extras(
+        cards,
+        [edge.model_dump(mode="json") for edge in es.list_edges(board_id)],
+    )
     ordered = search_logic.sort_cards(cards, sort, tie_breaker=True)
     try:
         selected_fields = card_projection.resolve_card_fields(
@@ -410,6 +414,7 @@ def api_list_cards(
             limit=limit,
             cursor=cursor,
             sort_key=lambda card: search_logic.card_sort_key(card, sort),
+            item_extras=coverage,
             selected_fields=selected_fields,
         )
     except card_projection.InvalidCursor as exc:
@@ -436,6 +441,7 @@ def api_search_cards(
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
     edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
+    coverage = card_projection.coverage_extras(cards, edges)
     try:
         ordered, relation_roles = search_logic.search_cards_with_roles(
             cards, columns, query=query, priority=priority, label=label, edges=edges, sort=sort
@@ -458,6 +464,7 @@ def api_search_cards(
             cursor=cursor,
             sort_key=lambda card: search_logic.card_sort_key(card, sort),
             relation_roles=relation_roles,
+            item_extras=coverage,
             selected_fields=selected_fields,
         )
     except card_projection.InvalidCursor as exc:
@@ -488,6 +495,7 @@ def api_relevant_candidates(
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
     edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
+    coverage = card_projection.coverage_extras(cards, edges)
     try:
         ranked, scores, column_names, error = search_logic.ranked_relevant_cards(
             cards,
@@ -502,6 +510,7 @@ def api_relevant_candidates(
             card["id"]: {
                 "relevance_score": scores[card["id"]],
                 "column": column_names.get(card.get("column_id"), card.get("column_id", "")),
+                **coverage.get(card["id"], {}),
             }
             for card in ranked
         }

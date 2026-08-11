@@ -1,12 +1,51 @@
-"""Edge persistence. Arbitrary typed connections between two cards, stored
-per-board alongside cards/columns. `type` is a free-form string (e.g.
-"blocked_by", "blocks", "duplicates", "relates_to") — no fixed vocabulary,
-same open-ended approach labels already take."""
+"""Controlled directional relationships between cards."""
 
 import db
 from models import CreateEdge, Edge, Event
 
 from board_store import get_board
+
+
+def _direction_is_valid(edge_type: str, source, target) -> bool:
+    source_kind = source.semantics.kind
+    target_kind = target.semantics.kind
+    if not source_kind or not target_kind:
+        return True
+    if edge_type == "defines":
+        return (source_kind, target_kind) in {
+            ("product_area", "feature"),
+            ("feature", "requirement"),
+        }
+    if edge_type == "implements":
+        return source_kind in {"task", "bug"} and target_kind == "requirement"
+    if edge_type == "verifies":
+        return source_kind == "test" and target_kind == "requirement"
+    if edge_type == "fixes":
+        return source_kind == "task" and target_kind == "bug"
+    if edge_type == "supersedes":
+        return source_kind == target_kind
+    return edge_type == "depends_on"
+
+
+def _would_cycle_dependency(conn, board_id: str, source_id: str, target_id: str) -> bool:
+    adjacency: dict[str, set[str]] = {}
+    for row in conn.execute(
+        "SELECT from_card_id, to_card_id FROM edges"
+        " WHERE board_id=? AND type='depends_on'",
+        (board_id,),
+    ):
+        adjacency.setdefault(row["from_card_id"], set()).add(row["to_card_id"])
+    pending = [target_id]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == source_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(adjacency.get(current, ()))
+    return False
 
 
 def read_edges(board_id: str) -> list[Edge]:
@@ -87,6 +126,37 @@ def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
             )
         }
         if data.from_card_id not in found or data.to_card_id not in found:
+            return None
+        if data.from_card_id == data.to_card_id:
+            return None
+        if conn.execute(
+            "SELECT 1 FROM edges WHERE board_id=? AND from_card_id=?"
+            " AND to_card_id=? AND type=?",
+            (board_id, data.from_card_id, data.to_card_id, data.type),
+        ).fetchone():
+            return None
+        cards = {
+            card.id: card
+            for card in db.hydrate_cards(
+                conn,
+                conn.execute(
+                    "SELECT * FROM cards WHERE board_id=? AND id IN (?,?)",
+                    (board_id, data.from_card_id, data.to_card_id),
+                ).fetchall(),
+            )
+        }
+        if not _direction_is_valid(
+            data.type,
+            cards[data.from_card_id],
+            cards[data.to_card_id],
+        ):
+            return None
+        if data.type == "depends_on" and _would_cycle_dependency(
+            conn,
+            board_id,
+            data.from_card_id,
+            data.to_card_id,
+        ):
             return None
         edge = Edge(
             board_id=board_id, from_card_id=data.from_card_id, to_card_id=data.to_card_id,

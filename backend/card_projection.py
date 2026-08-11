@@ -25,7 +25,7 @@ _CURSOR_SIGNATURE_BYTES = 32
 _CURSOR_SECRET_BYTES = 32
 
 CARD_FIELDS = tuple(Card.model_fields)
-DERIVED_FIELDS = ("body_snippet", "has_more_body")
+DERIVED_FIELDS = ("body_snippet", "has_more_body", "coverage")
 ENDPOINT_EXTRAS = {
     "list_cards": (),
     "search_cards": ("relation_roles",),
@@ -38,8 +38,68 @@ COMPACT_CARD_FIELDS = (
     "parent_id",
     "priority",
     "labels",
-    *DERIVED_FIELDS,
+    "body_snippet",
+    "has_more_body",
 )
+
+
+def coverage_extras(
+    cards: Sequence[Mapping[str, Any]],
+    edges: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    by_id = {card["id"]: card for card in cards}
+    children: dict[str, list[str]] = {}
+    for card in cards:
+        if card.get("parent_id"):
+            children.setdefault(card["parent_id"], []).append(card["id"])
+
+    incoming: dict[str, set[str]] = {}
+    for edge in edges:
+        incoming.setdefault(edge["to_card_id"], set()).add(edge["type"])
+
+    states: dict[str, str] = {}
+    for card in cards:
+        semantics = card.get("semantics") or {}
+        if semantics.get("kind") != "requirement":
+            continue
+        relation_types = incoming.get(card["id"], set())
+        evidence_kinds = {
+            item.get("kind")
+            for item in semantics.get("evidence", [])
+            if isinstance(item, Mapping)
+        }
+        if "verifies" in relation_types or evidence_kinds & {"test", "validation"}:
+            states[card["id"]] = "verified"
+        elif "implements" in relation_types or evidence_kinds & {"source", "commit"}:
+            states[card["id"]] = "implemented"
+        else:
+            states[card["id"]] = "uncovered"
+
+    def rollup(card_id: str) -> str:
+        if card_id in states:
+            return states[card_id]
+        child_states = [
+            rollup(child_id)
+            for child_id in children.get(card_id, [])
+            if (by_id.get(child_id, {}).get("semantics") or {}).get("kind")
+            in {"feature", "requirement"}
+        ]
+        if not child_states or all(state == "uncovered" for state in child_states):
+            state = "uncovered"
+        elif all(state == "verified" for state in child_states):
+            state = "verified"
+        elif all(state in {"implemented", "verified"} for state in child_states):
+            state = "implemented"
+        else:
+            state = "partial"
+        states[card_id] = state
+        return state
+
+    for card in cards:
+        kind = (card.get("semantics") or {}).get("kind")
+        if kind in {"product_area", "feature"}:
+            rollup(card["id"])
+    return {card_id: {"coverage": state} for card_id, state in states.items()}
 
 
 class InvalidCursor(ValueError):
