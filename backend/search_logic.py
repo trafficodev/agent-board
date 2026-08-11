@@ -125,6 +125,17 @@ def search_cards(
     priority: str | None = None, label: str | None = None, edges: list[dict[str, Any]] | None = None,
     sort: str = "board",
 ) -> list[dict[str, Any]]:
+    results, _roles = search_cards_with_roles(
+        cards, columns, query=query, priority=priority, label=label, edges=edges, sort=sort
+    )
+    return results
+
+
+def search_cards_with_roles(
+    cards: list[dict[str, Any]], columns: list[dict[str, Any]], query: str = "",
+    priority: str | None = None, label: str | None = None, edges: list[dict[str, Any]] | None = None,
+    sort: str = "board",
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     terms = parse_search_query(query)
     column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
     cards_by_id = {card["id"]: card for card in cards}
@@ -141,19 +152,32 @@ def search_cards(
         if _matches_query(card, terms, column_names_by_id, rg_cache, edges_by_card, cards_by_id):
             direct_ids.add(card["id"])
 
-    if not terms and not priority and not label:
-        return sort_cards(cards, sort)
-
     visible_ids = set(direct_ids)
+    roles_by_id: dict[str, set[str]] = {
+        card_id: {"direct_match"} for card_id in direct_ids
+    }
     for card_id in direct_ids:
-        _add_ancestors(card_id, visible_ids, cards_by_id)
-        _add_descendants(card_id, visible_ids, children_by_parent)
+        _add_ancestors(card_id, visible_ids, cards_by_id, roles_by_id)
+        _add_descendants(card_id, visible_ids, children_by_parent, roles_by_id)
 
-    return sort_cards([card for card in cards if card["id"] in visible_ids], sort)
+    ordered = sort_cards([card for card in cards if card["id"] in visible_ids], sort)
+    role_order = {"direct_match": 0, "ancestor": 1, "descendant": 2}
+    roles = {
+        card_id: sorted(card_roles, key=role_order.__getitem__)
+        for card_id, card_roles in roles_by_id.items()
+    }
+    return ordered, roles
 
 
-def sort_cards(cards: list[dict[str, Any]], sort: str = "board") -> list[dict[str, Any]]:
-    return sorted(cards, key=lambda card: _sort_key(card, sort))
+def sort_cards(
+    cards: list[dict[str, Any]], sort: str = "board", *, tie_breaker: bool = False
+) -> list[dict[str, Any]]:
+    key = card_sort_key if tie_breaker else _sort_key
+    return sorted(cards, key=lambda card: key(card, sort))
+
+
+def card_sort_key(card: dict[str, Any], sort: str = "board") -> tuple[Any, ...]:
+    return (*_sort_key(card, sort), card.get("id", ""))
 
 
 _SHORTLIST_CAP = 40
@@ -172,11 +196,41 @@ def relevant_candidates(
     semantic/AI ranking (an embedder sends this shortlist to a model, since
     agent-board itself has no AI provider) -- it is not itself a semantic
     ranker and returns candidates, not full cards."""
-    terms = parse_search_query(query)
-    if not terms:
+    ranked_cards, _scores, column_names_by_id, error = ranked_relevant_cards(
+        cards,
+        columns,
+        query,
+        priority=priority,
+        label=label,
+        edges=edges,
+        max_candidates=max_candidates,
+    )
+    if error:
         return {"candidates": [], "error": "empty_query"}
 
-    column_names_by_id = {column["id"]: column.get("name", column["id"]) for column in columns}
+    candidates = [
+        _shortlist_candidate(card, column_names_by_id)
+        for card in ranked_cards
+    ]
+    return {"candidates": candidates, "error": None}
+
+
+def ranked_relevant_cards(
+    cards: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    query: str,
+    priority: str | None = None,
+    label: str | None = None,
+    edges: list[dict[str, Any]] | None = None,
+    max_candidates: int = _SHORTLIST_CAP,
+) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, str], str | None]:
+    terms = parse_search_query(query)
+    column_names_by_id = {
+        column["id"]: column.get("name", column["id"]) for column in columns
+    }
+    if not terms:
+        return [], {}, column_names_by_id, "empty_query"
+
     cards_by_id = {card["id"]: card for card in cards}
     edges_by_card = _group_edges_by_card(edges or [])
     ranked: list[tuple[int, dict[str, Any]]] = []
@@ -190,12 +244,14 @@ def relevant_candidates(
         if score > 0:
             ranked.append((score, card))
 
-    ranked.sort(key=lambda item: (-item[0], _card_sort_key(item[1])))
-    candidates = [
-        _shortlist_candidate(card, column_names_by_id)
-        for _score, card in ranked[:max_candidates]
-    ]
-    return {"candidates": candidates, "error": None}
+    ranked.sort(key=lambda item: (-item[0], *_card_sort_key(item[1]), item[1]["id"]))
+    capped = ranked[:max_candidates]
+    return (
+        [card for _score, card in capped],
+        {card["id"]: score for score, card in capped},
+        column_names_by_id,
+        None,
+    )
 
 
 def _shortlist_candidate(card: dict[str, Any], column_names_by_id: dict[str, str]) -> dict[str, Any]:
@@ -694,22 +750,39 @@ def _flatten_metadata(value: Any) -> list[str]:
     return values
 
 
-def _add_ancestors(card_id: str, visible_ids: set[str], cards_by_id: dict[str, dict[str, Any]]) -> None:
+def _add_ancestors(
+    card_id: str,
+    visible_ids: set[str],
+    cards_by_id: dict[str, dict[str, Any]],
+    roles_by_id: dict[str, set[str]],
+) -> None:
     current = cards_by_id.get(card_id)
+    visited = {card_id}
     while current and current.get("parent_id"):
         parent = cards_by_id.get(current["parent_id"])
-        if not parent or parent["id"] in visible_ids:
+        if not parent or parent["id"] in visited:
             return
+        visited.add(parent["id"])
         visible_ids.add(parent["id"])
+        roles_by_id.setdefault(parent["id"], set()).add("ancestor")
         current = parent
 
 
-def _add_descendants(card_id: str, visible_ids: set[str], children_by_parent: dict[str, list[dict[str, Any]]]) -> None:
+def _add_descendants(
+    card_id: str,
+    visible_ids: set[str],
+    children_by_parent: dict[str, list[dict[str, Any]]],
+    roles_by_id: dict[str, set[str]],
+    visited: set[str] | None = None,
+) -> None:
+    visited = set() if visited is None else visited
+    if card_id in visited:
+        return
+    visited.add(card_id)
     for child in children_by_parent.get(card_id, []):
-        if child["id"] in visible_ids:
-            continue
         visible_ids.add(child["id"])
-        _add_descendants(child["id"], visible_ids, children_by_parent)
+        roles_by_id.setdefault(child["id"], set()).add("descendant")
+        _add_descendants(child["id"], visible_ids, children_by_parent, roles_by_id, visited)
 
 
 def _group_children(cards: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

@@ -10,6 +10,12 @@ def home() -> Path:
     return Path.home() / ".agent-board"
 
 
+def cursor_secret_path() -> Path:
+    directory = home()
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "cursor_secret"
+
+
 def boards_dir() -> Path:
     d = home() / "boards"
     d.mkdir(parents=True, exist_ok=True)

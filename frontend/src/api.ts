@@ -55,9 +55,10 @@ export const updateBoard = (id: string, data: { name?: string; description?: str
 export const deleteBoard = (id: string) => req<{ ok: boolean }>(`/boards/${id}`, { method: "DELETE" });
 
 // Cards
-export const listCards = (boardId: string) => req<Card[]>(`/boards/${boardId}/cards`);
+export const listCards = (boardId: string) => req<Card[]>(`/boards/${boardId}/cards?detail=full`);
 export const searchCards = (boardId: string, data: { query?: string; priority?: string; label?: string; sort?: string }) => {
   const params = new URLSearchParams();
+  params.set("detail", "full");
   if (data.query) params.set("query", data.query);
   if (data.priority) params.set("priority", data.priority);
   if (data.label) params.set("label", data.label);

@@ -17,6 +17,7 @@ import board_store as bs
 import canvas_sync
 import card_bulk
 import card_history
+import card_projection
 import card_store as cs
 import db
 import edge_store as es
@@ -375,6 +376,15 @@ def api_delete_column(board_id: str, column_id: str):
 
 # --- Cards ---
 
+def _validate_card_detail_paging(
+    detail: Literal["compact", "full"], limit: int, cursor: str | None
+) -> None:
+    if detail == "full" and (
+        cursor is not None or limit != card_projection.DEFAULT_PAGE_LIMIT
+    ):
+        raise HTTPException(400, "full_detail_cannot_paginate")
+
+
 @app.get("/api/boards/{board_id}/cards")
 def api_list_cards(
     board_id: str,
@@ -383,20 +393,87 @@ def api_list_cards(
     column_id: str | None = None,
     parent_id: str | None = None,
     sort: str = "board",
+    limit: int = Query(card_projection.DEFAULT_PAGE_LIMIT, ge=1, le=card_projection.MAX_PAGE_LIMIT),
+    cursor: str | None = None,
+    detail: Literal["compact", "full"] = Query(
+        "compact",
+        description="Use full only for the legacy unpaginated Card[] response; full cannot combine with cursor or a nondefault limit.",
+    ),
 ):
     _board_or_404(board_id)
+    _validate_card_detail_paging(detail, limit, cursor)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id, priority=priority, label=label, column_id=column_id, parent_id=parent_id)]
-    return search_logic.sort_cards(cards, sort)
+    ordered = search_logic.sort_cards(cards, sort)
+    if detail == "full":
+        return ordered
+    ordered = search_logic.sort_cards(ordered, sort, tie_breaker=True)
+    try:
+        return card_projection.page_cards(
+            ordered,
+            board_id=board_id,
+            endpoint="list_cards",
+            request={
+                "priority": priority,
+                "label": label,
+                "column_id": column_id,
+                "parent_id": parent_id,
+                "sort": sort,
+            },
+            limit=limit,
+            cursor=cursor,
+            sort_key=lambda card: search_logic.card_sort_key(card, sort),
+        )
+    except card_projection.InvalidCursor as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except card_projection.StaleCursor as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/boards/{board_id}/cards/search")
-def api_search_cards(board_id: str, query: str = "", priority: str | None = None, label: str | None = None, sort: str = "board"):
+def api_search_cards(
+    board_id: str,
+    query: str = "",
+    priority: str | None = None,
+    label: str | None = None,
+    sort: str = "board",
+    limit: int = Query(card_projection.DEFAULT_PAGE_LIMIT, ge=1, le=card_projection.MAX_PAGE_LIMIT),
+    cursor: str | None = None,
+    detail: Literal["compact", "full"] = Query(
+        "compact",
+        description="Use full only for the legacy unpaginated Card[] response; full cannot combine with cursor or a nondefault limit.",
+    ),
+):
     board = _board_or_404(board_id)
+    _validate_card_detail_paging(detail, limit, cursor)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
     edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
     try:
-        return search_logic.search_cards(cards, columns, query=query, priority=priority, label=label, edges=edges, sort=sort)
+        ordered, relation_roles = search_logic.search_cards_with_roles(
+            cards, columns, query=query, priority=priority, label=label, edges=edges, sort=sort
+        )
+        if detail == "full":
+            return ordered
+        ordered = search_logic.sort_cards(ordered, sort, tie_breaker=True)
+        return card_projection.page_cards(
+            ordered,
+            board_id=board_id,
+            endpoint="search_cards",
+            request={
+                "query": query,
+                "priority": priority,
+                "label": label,
+                "sort": sort,
+            },
+            limit=limit,
+            cursor=cursor,
+            sort_key=lambda card: search_logic.card_sort_key(card, sort),
+            relation_roles=relation_roles,
+        )
+    except card_projection.InvalidCursor as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except card_projection.StaleCursor as exc:
+        raise HTTPException(400, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -408,6 +485,8 @@ def api_relevant_candidates(
     priority: str | None = None,
     label: str | None = None,
     max_candidates: int = Query(search_logic._SHORTLIST_CAP, ge=1, le=50),
+    limit: int = Query(card_projection.DEFAULT_PAGE_LIMIT, ge=1, le=card_projection.MAX_PAGE_LIMIT),
+    cursor: str | None = None,
 ):
     """Keyword-relevance shortlist only -- a building block for semantic/AI
     ranking, not itself a semantic ranker (agent-board has no AI provider).
@@ -418,7 +497,7 @@ def api_relevant_candidates(
     columns = [column.model_dump(mode="json") for column in board.columns]
     edges = [edge.model_dump(mode="json") for edge in es.list_edges(board_id)]
     try:
-        return search_logic.relevant_candidates(
+        ranked, scores, column_names, error = search_logic.ranked_relevant_cards(
             cards,
             columns,
             query=query,
@@ -427,6 +506,36 @@ def api_relevant_candidates(
             edges=edges,
             max_candidates=max_candidates,
         )
+        extras = {
+            card["id"]: {
+                "relevance_score": scores[card["id"]],
+                "column": column_names.get(card.get("column_id"), card.get("column_id", "")),
+            }
+            for card in ranked
+        }
+        return card_projection.page_cards(
+            ranked,
+            board_id=board_id,
+            endpoint="relevant_candidates",
+            request={
+                "query": query,
+                "priority": priority,
+                "label": label,
+                "max_candidates": max_candidates,
+            },
+            limit=limit,
+            cursor=cursor,
+            sort_key=lambda card: (
+                -scores[card["id"]],
+                *search_logic.card_sort_key(card, "board"),
+            ),
+            item_extras=extras,
+            envelope_extras={"error": error},
+        )
+    except card_projection.InvalidCursor as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except card_projection.StaleCursor as exc:
+        raise HTTPException(400, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

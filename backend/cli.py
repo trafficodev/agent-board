@@ -12,6 +12,21 @@ def _print(result):
     print(json.dumps(result, indent=2, default=str))
 
 
+def _add_card_page_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--limit", type=int, default=50)
+    command.add_argument("--cursor")
+
+
+def _add_card_exploration_args(command: argparse.ArgumentParser) -> None:
+    _add_card_page_args(command)
+    command.add_argument(
+        "--detail",
+        choices=("compact", "full"),
+        default="compact",
+        help="full returns the legacy unpaginated cards and cannot combine with --cursor or a nondefault --limit",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-board")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -110,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_cards.add_argument("--priority")
     list_cards.add_argument("--label")
     list_cards.add_argument("--sort")
+    _add_card_exploration_args(list_cards)
     list_cards.set_defaults(
         func=lambda args: client.list_cards(
             args.board_id,
@@ -118,6 +134,9 @@ def build_parser() -> argparse.ArgumentParser:
             priority=args.priority,
             label=args.label,
             sort=args.sort,
+            limit=args.limit,
+            cursor=args.cursor,
+            detail=args.detail,
         )
     )
 
@@ -127,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_cards.add_argument("--priority")
     search_cards.add_argument("--label")
     search_cards.add_argument("--sort")
+    _add_card_exploration_args(search_cards)
     search_cards.set_defaults(
         func=lambda args: client.search_cards(
             args.board_id,
@@ -134,6 +154,28 @@ def build_parser() -> argparse.ArgumentParser:
             priority=args.priority,
             label=args.label,
             sort=args.sort,
+            limit=args.limit,
+            cursor=args.cursor,
+            detail=args.detail,
+        )
+    )
+
+    relevant_candidates = sub.add_parser("relevant_candidates")
+    relevant_candidates.add_argument("board_id")
+    relevant_candidates.add_argument("query")
+    relevant_candidates.add_argument("--priority")
+    relevant_candidates.add_argument("--label")
+    relevant_candidates.add_argument("--max-candidates", type=int, default=40)
+    _add_card_page_args(relevant_candidates)
+    relevant_candidates.set_defaults(
+        func=lambda args: client.relevant_candidates(
+            args.board_id,
+            args.query,
+            priority=args.priority,
+            label=args.label,
+            max_candidates=args.max_candidates,
+            limit=args.limit,
+            cursor=args.cursor,
         )
     )
 

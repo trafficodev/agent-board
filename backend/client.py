@@ -288,7 +288,28 @@ def delete_column(board_id: str, column_id: str) -> dict:
     return _req("DELETE", f"/api/boards/{board_id}/columns/{column_id}")
 
 
-def list_cards(board_id: str, **filters) -> list[dict]:
+def list_cards(
+    board_id: str,
+    *,
+    column_id: str | None = None,
+    parent_id: str | None = None,
+    priority: str | None = None,
+    label: str | None = None,
+    sort: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+    detail: str = "compact",
+) -> dict | list[dict]:
+    filters = {
+        "column_id": column_id,
+        "parent_id": parent_id,
+        "priority": priority,
+        "label": label,
+        "sort": sort,
+        "limit": limit,
+        "cursor": cursor,
+        "detail": detail,
+    }
     params = urllib.parse.urlencode({k: v for k, v in filters.items() if v is not None})
     path = f"/api/boards/{board_id}/cards"
     if params:
@@ -297,22 +318,60 @@ def list_cards(board_id: str, **filters) -> list[dict]:
 
 
 def search_cards(
-    board_id: str, query: str = "", priority: str | None = None, label: str | None = None, sort: str | None = None,
-) -> list[dict]:
-    params = urllib.parse.urlencode({k: v for k, v in {"query": query, "priority": priority, "label": label, "sort": sort}.items() if v})
+    board_id: str,
+    query: str = "",
+    priority: str | None = None,
+    label: str | None = None,
+    sort: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+    detail: str = "compact",
+) -> dict | list[dict]:
+    params = urllib.parse.urlencode({
+        k: v
+        for k, v in {
+            "query": query,
+            "priority": priority,
+            "label": label,
+            "sort": sort,
+            "limit": limit,
+            "cursor": cursor,
+            "detail": detail,
+        }.items()
+        if v is not None and v != ""
+    })
     path = f"/api/boards/{board_id}/cards/search"
     if params:
         path += f"?{params}"
     return _req("GET", path)
 
 
-def relevant_candidates(board_id: str, query: str, priority: str | None = None, label: str | None = None) -> dict:
+def relevant_candidates(
+    board_id: str,
+    query: str,
+    priority: str | None = None,
+    label: str | None = None,
+    max_candidates: int = 40,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict:
     """Keyword-relevance shortlist (see `search_logic.relevant_candidates`):
     a compact top-N candidate projection, not full cards. A building block
     for semantic/AI ranking -- agent-board has no AI provider of its own,
-    so it is not itself a semantic search. Returns `{"candidates": [...],
-    "error"}`; `error` is `None` or `"empty_query"`."""
-    params = urllib.parse.urlencode({k: v for k, v in {"query": query, "priority": priority, "label": label}.items() if v})
+    so it is not itself a semantic search. Returns a compact exploration
+    envelope with relevance_score and column on each item."""
+    params = urllib.parse.urlencode({
+        key: value
+        for key, value in {
+            "query": query,
+            "priority": priority,
+            "label": label,
+            "max_candidates": max_candidates,
+            "limit": limit,
+            "cursor": cursor,
+        }.items()
+        if value is not None and value != ""
+    })
     path = f"/api/boards/{board_id}/cards/relevant-candidates"
     if params:
         path += f"?{params}"
