@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import board_store as bs
 import card_store as cs
 import card_validation
+import edge_store
 from models import AddNote, CreateCard, MoveCard
 
 VALIDATOR_PREFIX = "validator:"
@@ -71,7 +72,12 @@ def scan_and_apply(board_id: str, now: datetime | None = None) -> dict:
         return {"board_id": board_id, "error": "board has no columns"}
 
     cards = cs.list_cards(board_id)
-    findings = card_validation.scan_board(board, cards, now=now)
+    findings = card_validation.scan_board(
+        board,
+        cards,
+        now=now,
+        edges=edge_store.list_edges(board_id),
+    )
     existing = {
         card.external_id: card
         for card in cards

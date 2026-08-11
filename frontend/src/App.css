@@ -534,6 +534,43 @@ textarea {
   gap: 8px;
 }
 
+.semantics-edit {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.semantics-edit input,
+.semantics-edit textarea {
+  grid-column: 1 / -1;
+}
+
+.semantic-strip {
+  border-left: 3px solid #5b6ee1;
+  background: #f3f5ff;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+
+.semantic-heading {
+  display: flex;
+  gap: 8px;
+  color: #596074;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.semantic-kind {
+  color: #3446b8;
+  font-weight: 700;
+}
+
+.semantic-strip p,
+.semantic-strip ul {
+  margin: 7px 0 0;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: minmax(0, 130px) minmax(0, 1fr);

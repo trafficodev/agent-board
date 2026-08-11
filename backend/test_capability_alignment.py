@@ -5,6 +5,9 @@ from unittest.mock import patch
 import cli
 import client
 from mcp_tools import GROUPS
+from card_semantics import RelationshipType
+from models import ChangeContext
+from typing import get_args
 
 
 UI_CAPABILITIES = {
@@ -175,6 +178,137 @@ class CapabilityAlignmentTest(unittest.TestCase):
             include=["body", "metadata"],
             exclude=["labels"],
         )
+
+    def test_mcp_card_semantics_schema_and_sparse_forwarding(self):
+        from mcp_tools import cards
+
+        tools = {tool.name: tool for tool in cards.TOOLS}
+        semantics = tools["create_card"].inputSchema["properties"]["semantics"]
+        self.assertFalse(semantics["additionalProperties"])
+        self.assertEqual(
+            set(semantics["properties"]),
+            {
+                "kind", "catalog_lifecycle", "outcome", "acceptance_criteria",
+                "exclusions", "owning_surface", "ownership",
+                "evidence", "decisions",
+            },
+        )
+        self.assertEqual(
+            tools["update_card"].inputSchema["properties"]["semantics"],
+            semantics,
+        )
+        self.assertEqual(
+            tools["bulk_cards"].inputSchema["properties"]["operations"]
+            ["items"]["oneOf"][0]["properties"]["semantics"],
+            semantics,
+        )
+        bulk_variants = tools["bulk_cards"].inputSchema["properties"]["operations"]["items"]["oneOf"]
+        self.assertEqual(
+            [variant["properties"]["op"]["const"] for variant in bulk_variants],
+            ["create", "update", "move", "delete", "note"],
+        )
+
+        required = {"board_id": "b", "title": "T", "column_id": "c"}
+        with patch.object(client, "create_card", return_value={}) as create:
+            cards.dispatch("create_card", required)
+        create.assert_called_once_with(
+            "b", "T", "c", change_context=None,
+        )
+
+        explicit = {
+            **required,
+            "body": "",
+            "parent_id": None,
+            "labels": [],
+            "metadata": {},
+            "semantics": {},
+        }
+        with patch.object(client, "create_card", return_value={}) as create:
+            cards.dispatch("create_card", explicit)
+        create.assert_called_once_with(
+            "b", "T", "c", change_context=None,
+            body="", parent_id=None, labels=[], metadata={}, semantics={},
+        )
+
+        with patch.object(client, "update_card", return_value={}) as update:
+            cards.dispatch("update_card", {
+                "board_id": "b", "card_id": "c", "body": "",
+                "parent_id": None, "labels": [], "metadata": {}, "semantics": {},
+            })
+        update.assert_called_once_with(
+            "b", "c", change_context=None, body="", parent_id=None,
+            labels=[], metadata={}, semantics={},
+        )
+
+    def test_client_create_card_omits_unsupplied_defaults(self):
+        context = ChangeContext.system("test")
+        with patch.object(client, "_req", return_value={}) as request:
+            client.create_card("board", "Title", "column", change_context=context)
+            client.create_card(
+                "board", "Title", "column", body="", parent_id=None,
+                labels=[], metadata={}, semantics={},
+                change_context=context,
+            )
+        self.assertEqual(
+            request.call_args_list[0].args[2],
+            {"title": "Title", "column_id": "column"},
+        )
+        self.assertEqual(
+            request.call_args_list[1].args[2],
+            {
+                "title": "Title", "column_id": "column", "body": "",
+                "parent_id": None, "labels": [], "metadata": {}, "semantics": {},
+            },
+        )
+
+    def test_cli_card_semantics_and_explicit_clears_are_presence_based(self):
+        parser = cli.build_parser()
+        create_args = parser.parse_args([
+            "create_card", "board", "Title", "column",
+            "--semantics-json", '{"kind":"task"}',
+        ])
+        with patch.object(client, "create_card", return_value={}) as create:
+            create_args.func(create_args)
+        create.assert_called_once_with(
+            "board", "Title", "column", semantics={"kind": "task"},
+        )
+
+        omitted = parser.parse_args(["update_card", "board", "card"])
+        with patch.object(client, "update_card", return_value={}) as update:
+            omitted.func(omitted)
+        update.assert_called_once_with("board", "card")
+
+        clearing = parser.parse_args([
+            "update_card", "board", "card", "--clear-parent", "--labels",
+            "--metadata-json", "{}", "--semantics-json", "{}",
+        ])
+        with patch.object(client, "update_card", return_value={}) as update:
+            clearing.func(clearing)
+        update.assert_called_once_with(
+            "board", "card", parent_id=None, labels=[], metadata={}, semantics={},
+        )
+
+    def test_mcp_edge_schema_uses_exact_controlled_vocabulary(self):
+        edge_tools = {tool.name: tool for tool in GROUPS["edges"].TOOLS}
+        schema = edge_tools["create_edge"].inputSchema
+        self.assertIn("type", schema["required"])
+        self.assertEqual(
+            schema["properties"]["type"]["enum"],
+            list(get_args(RelationshipType)),
+        )
+
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["create_edge", "board", "from", "to"])
+        for relationship in get_args(RelationshipType):
+            args = parser.parse_args([
+                "create_edge", "board", "from", "to", "--type", relationship,
+            ])
+            with patch.object(client, "create_edge", return_value={}) as create:
+                args.func(args)
+            create.assert_called_once_with(
+                "board", "from", "to", type=relationship, label="",
+            )
 
     def test_relevance_progression_is_forwarded_across_surfaces(self):
         with patch.object(client, "_req", return_value={}) as request:

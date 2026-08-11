@@ -14,6 +14,7 @@ import card_store
 import edge_store
 import search_logic
 import vote_store
+from card_semantics import CardSemantics
 from fastapi.testclient import TestClient
 from main import app
 from models import AddNote, AddSession, ChangeContext, CreateCard, CreateEdge, MoveCard, UpdateCard
@@ -36,6 +37,7 @@ class BoardConsolidationTest(unittest.TestCase):
             CreateCard(
                 title="Parent",
                 column_id=source_open.id,
+                semantics=CardSemantics(kind="task"),
                 metadata={
                     "edited_files": ["frontend/src/App.tsx"],
                     "git_commits": ["abc123"],
@@ -49,6 +51,7 @@ class BoardConsolidationTest(unittest.TestCase):
                 title="Child",
                 column_id=source_open.id,
                 parent_id=parent.id,
+                semantics=CardSemantics(kind="task"),
             ),
         )
         card_store.add_note(
@@ -81,7 +84,7 @@ class BoardConsolidationTest(unittest.TestCase):
             CreateEdge(
                 from_card_id=parent.id,
                 to_card_id=child.id,
-                type="blocks",
+                type="depends_on",
                 label="parent first",
             ),
         )
@@ -238,11 +241,11 @@ class BoardConsolidationTest(unittest.TestCase):
         source_open = self._column(self.source, "Open Items")
         first = card_store.create_card(
             self.source.id,
-            CreateCard(title="First", column_id=source_open.id),
+            CreateCard(title="First", column_id=source_open.id, semantics=CardSemantics(kind="task")),
         )
         second = card_store.create_card(
             self.source.id,
-            CreateCard(title="Second", column_id=source_open.id),
+            CreateCard(title="Second", column_id=source_open.id, semantics=CardSemantics(kind="task")),
         )
         entered = threading.Event()
         release = threading.Event()
@@ -258,7 +261,7 @@ class BoardConsolidationTest(unittest.TestCase):
         def write_source_edge():
             writer_result.append(edge_store.create_edge(
                 self.source.id,
-                CreateEdge(from_card_id=first.id, to_card_id=second.id, type="blocks"),
+                CreateEdge(from_card_id=first.id, to_card_id=second.id, type="depends_on"),
             ))
             writer_done.set()
 

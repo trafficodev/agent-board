@@ -1,7 +1,9 @@
 import argparse
 import json
+from typing import get_args
 
 import client
+from card_semantics import RelationshipType
 
 
 def _json_arg(value: str):
@@ -10,6 +12,14 @@ def _json_arg(value: str):
 
 def _print(result):
     print(json.dumps(result, indent=2, default=str))
+
+
+def _provided(args, mapping: dict[str, str]) -> dict:
+    return {
+        target: getattr(args, source)
+        for source, target in mapping.items()
+        if hasattr(args, source)
+    }
 
 
 def _add_card_page_args(command: argparse.ArgumentParser) -> None:
@@ -189,23 +199,23 @@ def build_parser() -> argparse.ArgumentParser:
     create_card.add_argument("board_id")
     create_card.add_argument("title")
     create_card.add_argument("column_id")
-    create_card.add_argument("--body", default="")
-    create_card.add_argument("--parent-id")
-    create_card.add_argument("--priority", default="medium")
-    create_card.add_argument("--labels", nargs="*")
-    create_card.add_argument("--external-id", default="")
-    create_card.add_argument("--metadata-json", type=_json_arg, default={})
+    create_card.add_argument("--body", default=argparse.SUPPRESS)
+    create_card.add_argument("--parent-id", default=argparse.SUPPRESS)
+    create_card.add_argument("--priority", default=argparse.SUPPRESS)
+    create_card.add_argument("--labels", nargs="*", default=argparse.SUPPRESS)
+    create_card.add_argument("--external-id", default=argparse.SUPPRESS)
+    create_card.add_argument("--metadata-json", type=_json_arg, default=argparse.SUPPRESS)
+    create_card.add_argument("--semantics-json", type=_json_arg, default=argparse.SUPPRESS)
     create_card.set_defaults(
         func=lambda args: client.create_card(
             args.board_id,
             args.title,
             args.column_id,
-            body=args.body,
-            parent_id=args.parent_id,
-            priority=args.priority,
-            labels=args.labels,
-            external_id=args.external_id,
-            metadata=args.metadata_json,
+            **_provided(args, {
+                "body": "body", "parent_id": "parent_id", "priority": "priority",
+                "labels": "labels", "external_id": "external_id",
+                "metadata_json": "metadata", "semantics_json": "semantics",
+            }),
         )
     )
 
@@ -224,28 +234,34 @@ def build_parser() -> argparse.ArgumentParser:
     update_card = sub.add_parser("update_card")
     update_card.add_argument("board_id")
     update_card.add_argument("card_id")
-    update_card.add_argument("--title")
-    update_card.add_argument("--body")
-    update_card.add_argument("--column-id")
-    update_card.add_argument("--parent-id")
-    update_card.add_argument("--position", type=int)
-    update_card.add_argument("--priority")
-    update_card.add_argument("--labels", nargs="*")
-    update_card.add_argument("--external-id")
-    update_card.add_argument("--metadata-json", type=_json_arg)
+    update_card.add_argument("--title", default=argparse.SUPPRESS)
+    update_card.add_argument("--body", default=argparse.SUPPRESS)
+    update_card.add_argument("--column-id", default=argparse.SUPPRESS)
+    update_parent = update_card.add_mutually_exclusive_group()
+    update_parent.add_argument("--parent-id", default=argparse.SUPPRESS)
+    update_parent.add_argument(
+        "--clear-parent",
+        dest="parent_id",
+        action="store_const",
+        const=None,
+        default=argparse.SUPPRESS,
+    )
+    update_card.add_argument("--position", type=int, default=argparse.SUPPRESS)
+    update_card.add_argument("--priority", default=argparse.SUPPRESS)
+    update_card.add_argument("--labels", nargs="*", default=argparse.SUPPRESS)
+    update_card.add_argument("--external-id", default=argparse.SUPPRESS)
+    update_card.add_argument("--metadata-json", type=_json_arg, default=argparse.SUPPRESS)
+    update_card.add_argument("--semantics-json", type=_json_arg, default=argparse.SUPPRESS)
     update_card.set_defaults(
         func=lambda args: client.update_card(
             args.board_id,
             args.card_id,
-            title=args.title,
-            body=args.body,
-            column_id=args.column_id,
-            parent_id=args.parent_id,
-            position=args.position,
-            priority=args.priority,
-            labels=args.labels,
-            external_id=args.external_id,
-            metadata=args.metadata_json,
+            **_provided(args, {
+                "title": "title", "body": "body", "column_id": "column_id",
+                "parent_id": "parent_id", "position": "position", "priority": "priority",
+                "labels": "labels", "external_id": "external_id",
+                "metadata_json": "metadata", "semantics_json": "semantics",
+            }),
         )
     )
 
@@ -376,7 +392,11 @@ def build_parser() -> argparse.ArgumentParser:
     create_edge.add_argument("board_id")
     create_edge.add_argument("from_card_id")
     create_edge.add_argument("to_card_id")
-    create_edge.add_argument("--type", default="relates_to")
+    create_edge.add_argument(
+        "--type",
+        required=True,
+        choices=get_args(RelationshipType),
+    )
     create_edge.add_argument("--label", default="")
     create_edge.set_defaults(
         func=lambda args: client.create_edge(

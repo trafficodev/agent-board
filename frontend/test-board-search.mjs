@@ -17,6 +17,7 @@ const card = (overrides) => ({
   priority: overrides.priority ?? "medium",
   labels: overrides.labels ?? [],
   session_history: overrides.session_history ?? [],
+  semantics: overrides.semantics ?? {},
   created_at: overrides.created_at ?? "2026-01-01T00:00:00Z",
   updated_at: overrides.updated_at ?? "2026-01-01T00:00:00Z",
 });
@@ -58,6 +59,27 @@ describe("board search", () => {
     assert.deepEqual(search(cards, "has:file"), ["file"]);
     assert.deepEqual(search(cards, "has:commit"), ["commit"]);
     assert.deepEqual(search(cards, "priority:high label:requirement title:display"), ["high"]);
+  });
+
+  it("matches semantic fields and presence predicates", () => {
+    const cards = [card({
+      id: "semantic",
+      semantics: {
+        kind: "requirement",
+        catalog_lifecycle: "accepted",
+        outcome: "Operators can audit every change",
+        acceptance_criteria: ["Sessions are attributable"],
+        exclusions: ["External analytics"],
+        owning_surface: "api",
+        ownership: { team: "runtime" },
+        evidence: [{ kind: "test", locator: "test_audit.py" }],
+        decisions: [{ id: "d1", text: "Use an append-only journal" }],
+      },
+    })];
+    assert.deepEqual(search(cards, "kind:requirement outcome:audit acceptance:attributable owner:runtime"), ["semantic"]);
+    assert.deepEqual(search(cards, "has:evidence has:decision has:ownership has:acceptance"), ["semantic"]);
+    assert.deepEqual(search(cards, "has:kind has:lifecycle has:outcome has:exclusions has:surface"), ["semantic"]);
+    assert.deepEqual(search(cards, "append-only"), ["semantic"]);
   });
 
   it("matches specific files and commits", () => {

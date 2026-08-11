@@ -7,13 +7,17 @@ os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-test-")
 import board_store
 import card_store
 import edge_store
+from card_semantics import CardSemantics
 from models import CreateCard, CreateEdge, MoveCard, UpdateCard
 
 
 def _backlog_board(*titles: str):
     board = board_store.create_board("T", "", ["Open Items", "Done"])
     column_id = board.columns[0].id
-    cards = [card_store.create_card(board.id, CreateCard(title=t, column_id=column_id)) for t in titles]
+    cards = [card_store.create_card(
+        board.id,
+        CreateCard(title=t, column_id=column_id, semantics=CardSemantics(kind="task")),
+    ) for t in titles]
     return board, column_id, cards
 
 
@@ -96,14 +100,18 @@ class DagOrderTest(unittest.TestCase):
     def test_edges_out_of_the_column_do_not_reorder_it(self):
         board, open_items, (a, b) = _backlog_board("A", "B")
         done = board.columns[1].id
-        blocker = card_store.create_card(board.id, CreateCard(title="Z", column_id=done))
+        blocker = card_store.create_card(board.id, CreateCard(
+            title="Z", column_id=done, semantics=CardSemantics(kind="task")
+        ))
         _block(board.id, blocker=blocker, blocked=a)
         self.assertEqual(_titles(board.id, open_items), ["A", "B"])
 
     def test_card_moved_into_the_backlog_lands_in_dependency_order(self):
         board, open_items, (a,) = _backlog_board("A")
         done = board.columns[1].id
-        blocker = card_store.create_card(board.id, CreateCard(title="Z", column_id=done))
+        blocker = card_store.create_card(board.id, CreateCard(
+            title="Z", column_id=done, semantics=CardSemantics(kind="task")
+        ))
         _block(board.id, blocker=blocker, blocked=a)
 
         card_store.move_card(board.id, blocker.id, MoveCard(column_id=open_items))

@@ -14,8 +14,9 @@ from models import CreateCard, CreateEdge, UpdateCard
 def _board_with_two_cards():
     board = board_store.create_board("T", "", ["Open"])
     column_id = board.columns[0].id
-    a = card_store.create_card(board.id, CreateCard(title="A", column_id=column_id))
-    b = card_store.create_card(board.id, CreateCard(title="B", column_id=column_id))
+    semantics = CardSemantics(kind="task")
+    a = card_store.create_card(board.id, CreateCard(title="A", column_id=column_id, semantics=semantics))
+    b = card_store.create_card(board.id, CreateCard(title="B", column_id=column_id, semantics=semantics))
     return board, a, b
 
 
@@ -42,7 +43,9 @@ class EdgeStoreTest(unittest.TestCase):
 
     def test_list_edges_filters_by_card_and_type(self):
         board, a, b = _board_with_two_cards()
-        c = card_store.create_card(board.id, CreateCard(title="C", column_id=board.columns[0].id))
+        c = card_store.create_card(board.id, CreateCard(
+            title="C", column_id=board.columns[0].id, semantics=CardSemantics(kind="task")
+        ))
         edge_store.create_edge(board.id, CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on"))
         edge_store.create_edge(board.id, CreateEdge(from_card_id=a.id, to_card_id=c.id, type="supersedes"))
 
@@ -121,6 +124,7 @@ class EdgeStoreTest(unittest.TestCase):
                 parent_id=feature.id,
                 semantics=CardSemantics(
                     kind="requirement",
+                    catalog_lifecycle="active",
                     outcome="Behavior exists",
                     acceptance_criteria=["Behavior is observable"],
                 ),
@@ -141,6 +145,60 @@ class EdgeStoreTest(unittest.TestCase):
                 to_card_id=delivery.id,
                 type="implements",
             ),
+        ))
+
+    def test_rejects_controlled_relationships_between_untyped_cards(self):
+        board = board_store.create_board("Untyped", "", ["Open"])
+        first = card_store.create_card(board.id, CreateCard(title="A", column_id=board.columns[0].id))
+        second = card_store.create_card(board.id, CreateCard(title="B", column_id=board.columns[0].id))
+        self.assertIsNone(edge_store.create_edge(
+            board.id,
+            CreateEdge(from_card_id=first.id, to_card_id=second.id, type="depends_on"),
+        ))
+
+    def test_defines_requires_the_same_parent_relationship(self):
+        board = board_store.create_board("Catalog", "", ["Open"])
+        area = card_store.create_card(board.id, CreateCard(
+            title="Area", column_id=board.columns[0].id,
+            semantics=CardSemantics(kind="product_area", catalog_lifecycle="active"),
+        ))
+        other_area = card_store.create_card(board.id, CreateCard(
+            title="Other area", column_id=board.columns[0].id,
+            semantics=CardSemantics(kind="product_area", catalog_lifecycle="active"),
+        ))
+        feature = card_store.create_card(board.id, CreateCard(
+            title="Feature", column_id=board.columns[0].id,
+            parent_id=area.id,
+            semantics=CardSemantics(kind="feature", catalog_lifecycle="active"),
+        ))
+        self.assertIsNone(edge_store.create_edge(
+            board.id,
+            CreateEdge(from_card_id=other_area.id, to_card_id=feature.id, type="defines"),
+        ))
+
+    def test_kind_change_cannot_invalidate_an_incident_relationship(self):
+        board, delivery, _ = _board_with_two_cards()
+        area = card_store.create_card(board.id, CreateCard(
+            title="Area", column_id=board.columns[0].id,
+            semantics=CardSemantics(kind="product_area", catalog_lifecycle="active"),
+        ))
+        feature = card_store.create_card(board.id, CreateCard(
+            title="Feature", column_id=board.columns[0].id, parent_id=area.id,
+            semantics=CardSemantics(kind="feature", catalog_lifecycle="active"),
+        ))
+        requirement = card_store.create_card(board.id, CreateCard(
+            title="Requirement", column_id=board.columns[0].id, parent_id=feature.id,
+            semantics=CardSemantics(
+                kind="requirement", catalog_lifecycle="active", outcome="Works",
+                acceptance_criteria=["Observable"],
+            ),
+        ))
+        self.assertIsNotNone(edge_store.create_edge(
+            board.id,
+            CreateEdge(from_card_id=delivery.id, to_card_id=requirement.id, type="implements"),
+        ))
+        self.assertIsNone(card_store.update_card(
+            board.id, delivery.id, UpdateCard(semantics=CardSemantics(kind="test"))
         ))
 
 

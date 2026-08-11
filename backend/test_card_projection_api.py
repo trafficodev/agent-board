@@ -28,6 +28,32 @@ class CardProjectionApiTest(unittest.TestCase):
         self.client = TestClient(main.app)
         self.path = f"/api/boards/{self.board.id}/cards"
 
+    def test_explicit_partial_test_evidence_does_not_claim_verified_coverage(self):
+        coverage = card_projection.coverage_extras(
+            [{
+                "id": "requirement",
+                "semantics": {
+                    "kind": "requirement",
+                    "evidence": [{"kind": "test", "locator": "test.py", "state": "partial"}],
+                },
+            }],
+            [],
+        )
+        self.assertEqual(coverage["requirement"]["coverage"], "partial")
+
+    def test_explicit_uncovered_evidence_remains_uncovered(self):
+        coverage = card_projection.coverage_extras(
+            [{
+                "id": "requirement",
+                "semantics": {
+                    "kind": "requirement",
+                    "evidence": [{"kind": "test", "locator": "test.py", "state": "uncovered"}],
+                },
+            }],
+            [],
+        )
+        self.assertEqual(coverage["requirement"]["coverage"], "uncovered")
+
     def create_card(self, title, *, body="", parent_id=None, priority="medium", labels=None):
         return card_store.create_card(
             self.board.id,
@@ -140,6 +166,7 @@ class CardProjectionApiTest(unittest.TestCase):
                 parent_id=feature.id,
                 semantics=CardSemantics(
                     kind="requirement",
+                    catalog_lifecycle="active",
                     outcome="Coverage is visible",
                     acceptance_criteria=["Coverage is derived"],
                     evidence=[CardEvidence(kind="source", locator="backend/main.py")],

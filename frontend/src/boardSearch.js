@@ -12,6 +12,10 @@ const FIELD_ALIASES = new Map([
   ["worktree_paths", "worktree"],
   ["content", "contains"],
   ["external", "external_id"],
+  ["lifecycle", "catalog_lifecycle"],
+  ["acceptance", "acceptance_criteria"],
+  ["owner", "ownership"],
+  ["decision", "decisions"],
 ]);
 
 export const BOARD_SORTS = [
@@ -172,6 +176,16 @@ function searchValues(card, columnNamesById, field) {
     column: [columnNamesById.get(card.column_id) ?? card.column_id],
     id: [card.id],
     session: sessions,
+    semantics: semanticValues(card.semantics),
+    kind: [card.semantics?.kind ?? ""],
+    catalog_lifecycle: [card.semantics?.catalog_lifecycle ?? ""],
+    outcome: [card.semantics?.outcome ?? ""],
+    acceptance_criteria: card.semantics?.acceptance_criteria ?? [],
+    exclusions: card.semantics?.exclusions ?? [],
+    owning_surface: [card.semantics?.owning_surface ?? ""],
+    evidence: semanticValues(card.semantics?.evidence),
+    ownership: semanticValues(card.semantics?.ownership),
+    decisions: semanticValues(card.semantics?.decisions),
   };
 
   if (field && scoped[field]) return scoped[field];
@@ -184,7 +198,15 @@ function searchValues(card, columnNamesById, field) {
     columnNamesById.get(card.column_id) ?? card.column_id,
     ...card.labels,
     ...sessions,
+    ...semanticValues(card.semantics),
   ];
+}
+
+function semanticValues(value) {
+  if (Array.isArray(value)) return value.flatMap(semanticValues);
+  if (value && typeof value === "object") return Object.entries(value).flatMap(([key, item]) => [key, ...semanticValues(item)]);
+  if (value === null || value === undefined) return [];
+  return [String(value)];
 }
 
 const HAS_ALIASES = new Map([
@@ -197,6 +219,15 @@ function matchesHas(card, value) {
   const field = HAS_ALIASES.get(value);
   if (field) return hasTracked(card, field);
   if (value === "session" || value === "sessions") return (card.session_history ?? []).length > 0;
+  if (value === "kind") return Boolean(card.semantics?.kind);
+  if (value === "lifecycle" || value === "catalog_lifecycle") return Boolean(card.semantics?.catalog_lifecycle);
+  if (value === "outcome") return Boolean(card.semantics?.outcome);
+  if (value === "exclusion" || value === "exclusions") return (card.semantics?.exclusions ?? []).length > 0;
+  if (value === "surface" || value === "owning_surface") return Boolean(card.semantics?.owning_surface);
+  if (value === "evidence") return (card.semantics?.evidence ?? []).length > 0;
+  if (value === "decision" || value === "decisions") return (card.semantics?.decisions ?? []).length > 0;
+  if (value === "ownership" || value === "owner") return semanticValues(card.semantics?.ownership).length > 0;
+  if (value === "acceptance" || value === "acceptance_criteria") return (card.semantics?.acceptance_criteria ?? []).length > 0;
   return false;
 }
 

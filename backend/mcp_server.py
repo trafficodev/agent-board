@@ -14,6 +14,7 @@ from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage, TextContent
 
 import db
+from card_semantics import sparse_value
 from mcp_tools import GROUPS
 
 _DEFAULT_MAX_CONCURRENCY = 8
@@ -72,12 +73,13 @@ class ToolDispatchOwner:
             raise RuntimeError("Agent Board MCP call has no lifecycle owner")
         self._active.add(task)
         try:
-            return await asyncio.get_running_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 self._executor,
                 group.dispatch,
                 name,
                 arguments,
             )
+            return sparse_value(result)
         finally:
             self._active.discard(task)
 

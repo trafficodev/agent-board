@@ -1,8 +1,13 @@
-"""Arbitrary typed connections between two cards."""
+"""Controlled directional relationships between cards."""
 
 from mcp.types import Tool
 
 import client
+from card_semantics import RelationshipType
+from typing import get_args
+
+
+RELATIONSHIP_TYPES = list(get_args(RelationshipType))
 
 TOOLS = [
     Tool(
@@ -13,7 +18,7 @@ TOOLS = [
             "properties": {
                 "board_id": {"type": "string"},
                 "card_id": {"type": "string", "description": "Only edges touching this card, either direction"},
-                "type": {"type": "string", "description": "Only edges of this type, e.g. blocked_by, blocks, duplicates"},
+                "type": {"type": "string", "enum": RELATIONSHIP_TYPES},
             },
             "required": ["board_id"],
         },
@@ -21,10 +26,8 @@ TOOLS = [
     Tool(
         name="create_edge",
         description=(
-            "Create a typed connection from one card to another (e.g. blocked_by, blocks, "
-            "duplicates, relates_to — any string). 'blocks' and 'blocked_by' also order the "
-            "Open Items column: a blocker is sorted above the card waiting on it, so the top "
-            "of the backlog is always work that nothing blocks."
+            "Create a controlled directional relationship. depends_on points from the dependent "
+            "card to its prerequisite and drives dependency ordering."
         ),
         inputSchema={
             "type": "object",
@@ -32,10 +35,10 @@ TOOLS = [
                 "board_id": {"type": "string"},
                 "from_card_id": {"type": "string"},
                 "to_card_id": {"type": "string"},
-                "type": {"type": "string", "default": "relates_to"},
+                "type": {"type": "string", "enum": RELATIONSHIP_TYPES},
                 "label": {"type": "string"},
             },
-            "required": ["board_id", "from_card_id", "to_card_id"],
+            "required": ["board_id", "from_card_id", "to_card_id", "type"],
         },
     ),
     Tool(
@@ -62,7 +65,7 @@ def dispatch(name: str, arguments: dict):
         case "create_edge":
             return client.create_edge(
                 arguments["board_id"], arguments["from_card_id"], arguments["to_card_id"],
-                type=arguments.get("type", "relates_to"), label=arguments.get("label", ""),
+                type=arguments["type"], label=arguments.get("label", ""),
             )
         case "delete_edge":
             return client.delete_edge(arguments["board_id"], arguments["edge_id"])

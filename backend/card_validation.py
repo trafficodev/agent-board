@@ -13,9 +13,12 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import get_args
 
+import edge_store
+from card_semantics import valid_semantic_parent
 from card_store import is_open_question
-from models import Board, Card
+from models import Board, Card, Edge, RelationshipType
 
 # Card ids are 12-char hex. Bodies and notes reference other cards by bare id,
 # so the same shape is what we look for when hunting dangling references.
@@ -50,6 +53,7 @@ class ScanContext:
 
     board: Board
     cards: list[Card]
+    edges: list[Edge]
     now: datetime
     _repo_cache: dict[str, Path | None] = field(default_factory=dict)
 
@@ -426,6 +430,86 @@ def check_stale_open_question(ctx: ScanContext) -> list[Finding]:
     return findings
 
 
+def check_semantic_hierarchy(ctx: ScanContext) -> list[Finding]:
+    cards = {card.id: card for card in ctx.cards}
+    findings = []
+    for card in ctx.cards:
+        if not card.semantics or not card.semantics.kind:
+            continue
+        parent = cards.get(card.parent_id) if card.parent_id else None
+        parent_semantics = parent.semantics if parent else None
+        if valid_semantic_parent(card.semantics, parent_semantics):
+            continue
+        findings.append(Finding(
+            check="semantic_hierarchy",
+            card_id=card.id,
+            title=f"Card {card.id} has an invalid semantic parent",
+            body=f"{card.title!r} does not follow the Product Area → Feature → Requirement hierarchy.",
+            labels=("validator", "board-hygiene", "semantics"),
+        ))
+    return findings
+
+
+def check_relationship_integrity(ctx: ScanContext) -> list[Finding]:
+    cards = {card.id: card for card in ctx.cards}
+    allowed = set(get_args(RelationshipType))
+    findings = []
+    seen: set[tuple[str, str, str]] = set()
+    dependency_edges: list[Edge] = []
+    for edge in ctx.edges:
+        key = (edge.from_card_id, edge.to_card_id, edge.type)
+        source = cards.get(edge.from_card_id)
+        target = cards.get(edge.to_card_id)
+        reasons = []
+        if edge.type not in allowed:
+            reasons.append(f"legacy relationship type {edge.type!r}")
+        if not source or not target:
+            reasons.append("missing endpoint")
+        elif source.id == target.id:
+            reasons.append("self relationship")
+        elif edge.type in allowed and not edge_store.direction_is_valid(edge.type, source, target):
+            reasons.append("invalid direction for card kinds")
+        elif edge.type in {"defines", "parent_of"} and target.parent_id != source.id:
+            reasons.append("relationship contradicts parent hierarchy")
+        if key in seen:
+            reasons.append("duplicate relationship")
+        seen.add(key)
+        if edge.type == "depends_on" and source and target:
+            dependency_edges.append(edge)
+        if not reasons:
+            continue
+        findings.append(Finding(
+            check="relationship_integrity",
+            card_id=edge.from_card_id,
+            title=f"Relationship {edge.id} is invalid",
+            body="; ".join(reasons),
+            labels=("validator", "board-hygiene", "relationships"),
+        ))
+
+    adjacency: dict[str, set[str]] = {}
+    for edge in dependency_edges:
+        adjacency.setdefault(edge.from_card_id, set()).add(edge.to_card_id)
+    for edge in dependency_edges:
+        pending = [edge.to_card_id]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current == edge.from_card_id:
+                findings.append(Finding(
+                    check="relationship_integrity",
+                    card_id=edge.from_card_id,
+                    title=f"Dependency relationship {edge.id} participates in a cycle",
+                    body="depends_on relationships must remain acyclic.",
+                    labels=("validator", "board-hygiene", "relationships"),
+                ))
+                break
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(adjacency.get(current, ()))
+    return findings
+
+
 CHECKS = (
     check_commit_missing,
     check_commit_unreachable,
@@ -436,16 +520,28 @@ CHECKS = (
     check_dangling_card_reference,
     check_malformed_labels,
     check_stale_open_question,
+    check_semantic_hierarchy,
+    check_relationship_integrity,
 )
 
 
-def scan_board(board: Board, cards: list[Card], now: datetime | None = None) -> list[Finding]:
+def scan_board(
+    board: Board,
+    cards: list[Card],
+    now: datetime | None = None,
+    edges: list[Edge] | None = None,
+) -> list[Finding]:
     """Every finding for one board. Validator-filed cards are never themselves
     scanned, so the worker cannot chase its own tail."""
     subjects = [c for c in cards if not c.external_id.startswith("validator:")]
+    subject_ids = {card.id for card in subjects}
     ctx = ScanContext(
         board=board,
         cards=subjects,
+        edges=[
+            edge for edge in (edges or [])
+            if edge.from_card_id in subject_ids and edge.to_card_id in subject_ids
+        ],
         now=now or datetime.now(timezone.utc),
     )
     findings: list[Finding] = []

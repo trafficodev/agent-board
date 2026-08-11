@@ -13,6 +13,20 @@ export interface SessionEntry {
   outcome: "success" | "failed" | "partial" | null;
 }
 
+export type CardKind = "product_area" | "feature" | "requirement" | "task" | "bug" | "test" | "decision" | "finding";
+
+export interface CardSemantics {
+  kind?: CardKind;
+  catalog_lifecycle?: "active" | "accepted" | "deprecated" | "proposed";
+  outcome?: string;
+  acceptance_criteria?: string[];
+  exclusions?: string[];
+  owning_surface?: string;
+  ownership?: Record<string, string>;
+  evidence?: Array<{ kind: "source" | "test" | "commit" | "screenshot" | "validation"; locator: string; revision?: string; verified_at?: string; state?: "uncovered" | "implemented" | "verified" | "partial" }>;
+  decisions?: Array<{ id: string; text: string; state?: "proposed" | "accepted" | "rejected" | "superseded"; rationale?: string; decided_by?: string; decided_at?: string; supersedes?: string }>;
+}
+
 export interface Card {
   id: string;
   board_id: string;
@@ -25,6 +39,8 @@ export interface Card {
   priority: "critical" | "high" | "medium" | "low";
   labels: string[];
   metadata: Record<string, unknown>;
+  semantics: CardSemantics;
+  coverage?: "uncovered" | "implemented" | "verified" | "partial";
   session_history: SessionEntry[];
   created_at: string;
   updated_at: string;

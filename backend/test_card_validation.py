@@ -11,8 +11,10 @@ os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-validation
 import board_store
 import card_store
 import card_validation
+import db
+import edge_store
 import validation_worker
-from models import AddNote, AnswerNote, CreateCard, MoveCard, UpdateCard
+from models import AddNote, AnswerNote, CardSemantics, CreateCard, Edge, MoveCard, UpdateCard
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -46,7 +48,9 @@ class CardValidationTest(unittest.TestCase):
     def _scan(self, now=None):
         cards = card_store.list_cards(self.board.id)
         board = board_store.get_board(self.board.id)
-        return card_validation.scan_board(board, cards, now=now)
+        return card_validation.scan_board(
+            board, cards, now=now, edges=edge_store.list_edges(self.board.id)
+        )
 
     def _checks(self, now=None):
         return {f.check for f in self._scan(now=now)}
@@ -55,6 +59,44 @@ class CardValidationTest(unittest.TestCase):
         kwargs.setdefault("title", "subject")
         kwargs.setdefault("column_id", self.open_id)
         return card_store.create_card(self.board.id, CreateCard(**kwargs))
+
+    def test_invalid_semantic_hierarchy_is_reported(self):
+        area = self._card(semantics=CardSemantics(
+            kind="product_area", catalog_lifecycle="active"
+        ))
+        task = self._card(semantics=CardSemantics(kind="task"))
+        with db.transaction() as conn:
+            conn.execute("UPDATE cards SET parent_id=? WHERE id=?", (area.id, task.id))
+        self.assertEqual(
+            [finding.card_id for finding in self._scan() if finding.check == "semantic_hierarchy"],
+            [task.id],
+        )
+
+    def test_legacy_relationship_and_dependency_cycle_are_reported(self):
+        first = self._card(semantics=CardSemantics(kind="task"))
+        second = self._card(semantics=CardSemantics(kind="task"))
+        with db.transaction() as conn:
+            db.write_edge(conn, Edge(
+                board_id=self.board.id,
+                from_card_id=first.id,
+                to_card_id=second.id,
+                type="custom_relation",
+            ))
+            db.write_edge(conn, Edge(
+                board_id=self.board.id,
+                from_card_id=first.id,
+                to_card_id=second.id,
+                type="depends_on",
+            ))
+            db.write_edge(conn, Edge(
+                board_id=self.board.id,
+                from_card_id=second.id,
+                to_card_id=first.id,
+                type="depends_on",
+            ))
+        findings = [f for f in self._scan() if f.check == "relationship_integrity"]
+        self.assertTrue(any("legacy relationship type" in finding.body for finding in findings))
+        self.assertTrue(any("cycle" in finding.title for finding in findings))
 
     # --- git-backed checks ---
 

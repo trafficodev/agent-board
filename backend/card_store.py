@@ -32,7 +32,7 @@ from card_diff import (
     snapshot_of,
 )
 from dag_order import dag_sort
-from edge_store import read_edges, write_edges
+from edge_store import direction_is_valid, read_edges, write_edges
 
 CLOSED_CARD_TTL = timedelta(days=3)
 CLOSED_AT_METADATA_KEY = "closed_at"
@@ -515,6 +515,23 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
         return None
     for child in (candidate for candidate in tx.cards if candidate.parent_id == card_id):
         if child.semantics.kind and not valid_semantic_parent(child.semantics, final_semantics):
+            return None
+    proposed = card.model_copy(update={
+        "parent_id": final_parent_id,
+        "semantics": final_semantics,
+    })
+    cards_by_id = {candidate.id: candidate for candidate in tx.cards}
+    cards_by_id[card_id] = proposed
+    for edge in (
+        candidate
+        for candidate in tx.edges
+        if card_id in {candidate.from_card_id, candidate.to_card_id}
+    ):
+        source = cards_by_id.get(edge.from_card_id)
+        target = cards_by_id.get(edge.to_card_id)
+        if not source or not target or not direction_is_valid(edge.type, source, target):
+            return None
+        if edge.type in {"defines", "parent_of"} and target.parent_id != source.id:
             return None
 
     closed_column_id = _closed_column_id(board_id)

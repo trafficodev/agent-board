@@ -1,4 +1,4 @@
-import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, CardChangeItem, ChangeVoteSummary, Column, Edge, Event } from "./types";
+import type { Board, CanvasSyncStatus, Card, CardAiSearchResult, CardChangeItem, CardSemantics, ChangeVoteSummary, Column, Edge, Event } from "./types";
 
 const BASE = "/api";
 
@@ -93,7 +93,7 @@ export const aiSearchCards = (boardId: string, data: { query: string; priority?:
   if (data.label) params.set("label", data.label);
   return req<CardAiSearchResult>(`/boards/${boardId}/cards/ai-search?${params}`, { signal: data.signal });
 };
-export const createCard = (boardId: string, data: { title: string; body?: string; column_id: string; parent_id?: string | null; priority?: string; labels?: string[] }) =>
+export const createCard = (boardId: string, data: { title: string; body?: string; column_id: string; parent_id?: string | null; priority?: string; labels?: string[]; semantics?: CardSemantics }) =>
   req<Card>(`/boards/${boardId}/cards`, { method: "POST", body: JSON.stringify(data) });
 export const updateCard = (boardId: string, cardId: string, data: Record<string, unknown>) =>
   req<Card>(`/boards/${boardId}/cards/${cardId}`, { method: "PATCH", body: JSON.stringify(data) });
@@ -145,7 +145,7 @@ export const listEdges = (boardId: string, cardId?: string, type?: string) => {
   const suffix = params.toString() ? `?${params}` : "";
   return req<Edge[]>(`/boards/${boardId}/edges${suffix}`);
 };
-export const createEdge = (boardId: string, data: { from_card_id: string; to_card_id: string; type?: string; label?: string }) =>
+export const createEdge = (boardId: string, data: { from_card_id: string; to_card_id: string; type: "defines" | "implements" | "verifies" | "depends_on" | "fixes" | "supersedes" | "validates" | "supports" | "documents" | "tests" | "relates_to" | "follows_up" | "duplicates" | "parent_of"; label?: string }) =>
   req<Edge>(`/boards/${boardId}/edges`, { method: "POST", body: JSON.stringify(data) });
 export const deleteEdge = (boardId: string, edgeId: string) =>
   req<{ ok: boolean }>(`/boards/${boardId}/edges/${edgeId}`, { method: "DELETE" });

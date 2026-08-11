@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 CardKind = Literal[
@@ -15,7 +15,7 @@ CardKind = Literal[
     "decision",
     "finding",
 ]
-CatalogLifecycle = Literal["proposed", "active", "deprecated"]
+CatalogLifecycle = Literal["proposed", "active", "accepted", "deprecated"]
 EvidenceState = Literal["uncovered", "implemented", "verified", "partial"]
 EvidenceKind = Literal["source", "test", "commit", "screenshot", "validation"]
 DecisionState = Literal["proposed", "accepted", "rejected", "superseded"]
@@ -26,6 +26,14 @@ RelationshipType = Literal[
     "depends_on",
     "fixes",
     "supersedes",
+    "validates",
+    "supports",
+    "documents",
+    "tests",
+    "relates_to",
+    "follows_up",
+    "duplicates",
+    "parent_of",
 ]
 
 CATALOG_PARENT_KIND: dict[str, str | None] = {
@@ -54,14 +62,18 @@ def sparse_value(value: Any) -> Any:
     return value
 
 
-class CardOwnership(BaseModel):
+class StrictSemanticModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CardOwnership(StrictSemanticModel):
     team: str = ""
     agent: str = ""
     repository: str = ""
     component: str = ""
 
 
-class CardEvidence(BaseModel):
+class CardEvidence(StrictSemanticModel):
     kind: EvidenceKind
     locator: str
     revision: str = ""
@@ -77,7 +89,7 @@ class CardEvidence(BaseModel):
         return value
 
 
-class CardDecision(BaseModel):
+class CardDecision(StrictSemanticModel):
     id: str
     text: str
     state: DecisionState = "proposed"
@@ -95,14 +107,13 @@ class CardDecision(BaseModel):
         return value
 
 
-class CardSemantics(BaseModel):
+class CardSemantics(StrictSemanticModel):
     kind: CardKind | None = None
     catalog_lifecycle: CatalogLifecycle | None = None
     outcome: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
     exclusions: list[str] = Field(default_factory=list)
     owning_surface: str = ""
-    evidence_state: EvidenceState | None = None
     ownership: CardOwnership | None = None
     evidence: list[CardEvidence] = Field(default_factory=list)
     decisions: list[CardDecision] = Field(default_factory=list)
@@ -117,11 +128,32 @@ class CardSemantics(BaseModel):
         catalog_kinds = {"product_area", "feature", "requirement"}
         if self.catalog_lifecycle and self.kind not in catalog_kinds:
             raise ValueError("catalog_lifecycle is only valid for catalog card kinds")
+        if self.kind in catalog_kinds and not self.catalog_lifecycle:
+            raise ValueError("catalog card kinds require catalog_lifecycle")
         if self.kind == "requirement":
             if not self.outcome.strip():
                 raise ValueError("requirement semantics require an outcome")
             if not [item for item in self.acceptance_criteria if item.strip()]:
                 raise ValueError("requirement semantics require acceptance criteria")
+        decision_ids = [decision.id for decision in self.decisions]
+        if len(decision_ids) != len(set(decision_ids)):
+            raise ValueError("decision ids must be unique within a card")
+        known = set(decision_ids)
+        supersedes = {
+            decision.id: decision.supersedes
+            for decision in self.decisions
+            if decision.supersedes
+        }
+        if any(target not in known for target in supersedes.values()):
+            raise ValueError("decision supersedes must reference a decision on the same card")
+        for decision_id in supersedes:
+            visited: set[str] = set()
+            current = decision_id
+            while current in supersedes:
+                if current in visited:
+                    raise ValueError("decision supersession must be acyclic")
+                visited.add(current)
+                current = supersedes[current]
         return self
 
     def sparse_dump(self) -> dict[str, Any]:
@@ -134,7 +166,7 @@ def valid_semantic_parent(
 ) -> bool:
     kind = semantics.kind
     if kind not in CATALOG_PARENT_KIND:
-        return parent_semantics is None
+        return parent_semantics is None or parent_semantics.kind == kind
     expected = CATALOG_PARENT_KIND[kind]
     return (
         parent_semantics is None

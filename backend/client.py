@@ -393,16 +393,31 @@ def _exploration_query(
     ])
 
 
-def create_card(board_id: str, title: str, column_id: str, body: str = "",
-                parent_id: str | None = None, priority: str = "medium",
-                labels: list[str] | None = None, external_id: str = "",
-                metadata: dict | None = None,
+_UNSET = object()
+
+
+def create_card(board_id: str, title: str, column_id: str, body=_UNSET,
+                parent_id=_UNSET, priority=_UNSET,
+                labels=_UNSET, external_id=_UNSET,
+                metadata=_UNSET, semantics=_UNSET,
                 change_context: ChangeContext | None = None) -> dict:
-    return _req("POST", f"/api/boards/{board_id}/cards", {
-        "external_id": external_id, "title": title, "body": body, "column_id": column_id,
-        "parent_id": parent_id, "priority": priority, "labels": labels or [],
-        "metadata": metadata or {},
-    }, change_context or ChangeContext.from_environment(os.environ))
+    payload = {"title": title, "column_id": column_id}
+    optional = {
+        "external_id": external_id,
+        "body": body,
+        "parent_id": parent_id,
+        "priority": priority,
+        "labels": labels,
+        "metadata": metadata,
+        "semantics": semantics,
+    }
+    payload.update({key: value for key, value in optional.items() if value is not _UNSET})
+    return _req(
+        "POST",
+        f"/api/boards/{board_id}/cards",
+        payload,
+        change_context or ChangeContext.from_environment(os.environ),
+    )
 
 
 def get_card(board_id: str, card_id: str) -> dict:
@@ -600,10 +615,11 @@ def list_edges(board_id: str, card_id: str | None = None, type: str | None = Non
 
 
 def create_edge(board_id: str, from_card_id: str, to_card_id: str,
-                type: str = "relates_to", label: str = "") -> dict:
-    return _req("POST", f"/api/boards/{board_id}/edges", {
-        "from_card_id": from_card_id, "to_card_id": to_card_id, "type": type, "label": label,
-    })
+                type: str, label: str = "") -> dict:
+    payload = {"from_card_id": from_card_id, "to_card_id": to_card_id, "type": type}
+    if label:
+        payload["label"] = label
+    return _req("POST", f"/api/boards/{board_id}/edges", payload)
 
 
 def delete_edge(board_id: str, edge_id: str) -> dict:

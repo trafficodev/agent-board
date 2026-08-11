@@ -5,6 +5,108 @@ from mcp.types import Tool
 import client
 from mcp_tools.context import CHANGE_CONTEXT_PROPERTIES, change_context_from_arguments
 
+
+SEMANTICS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "kind": {"type": "string", "enum": ["product_area", "feature", "requirement", "task", "bug", "test", "decision", "finding"]},
+        "catalog_lifecycle": {"type": "string", "enum": ["proposed", "active", "accepted", "deprecated"]},
+        "outcome": {"type": "string"},
+        "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+        "exclusions": {"type": "array", "items": {"type": "string"}},
+        "owning_surface": {"type": "string"},
+        "ownership": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "team": {"type": "string"}, "agent": {"type": "string"},
+                "repository": {"type": "string"}, "component": {"type": "string"},
+            },
+        },
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "kind": {"type": "string", "enum": ["source", "test", "commit", "screenshot", "validation"]},
+                    "locator": {"type": "string"}, "revision": {"type": "string"},
+                    "verified_at": {"type": "string"},
+                    "state": {"type": "string", "enum": ["uncovered", "implemented", "verified", "partial"]},
+                },
+                "required": ["kind", "locator"],
+            },
+        },
+        "decisions": {
+            "type": "array",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"}, "text": {"type": "string"},
+                    "state": {"type": "string", "enum": ["proposed", "accepted", "rejected", "superseded"]},
+                    "rationale": {"type": "string"}, "decided_by": {"type": "string"},
+                    "decided_at": {"type": "string"}, "supersedes": {"type": "string"},
+                },
+                "required": ["id", "text"],
+            },
+        },
+    },
+}
+
+_BULK_COMMON_CARD_PROPERTIES = {
+    "title": {"type": "string"},
+    "body": {"type": "string"},
+    "column_id": {"type": "string"},
+    "parent_id": {"type": ["string", "null"]},
+    "position": {"type": "integer"},
+    "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+    "labels": {"type": "array", "items": {"type": "string"}},
+    "metadata": {"type": "object"},
+    "semantics": SEMANTICS_SCHEMA,
+    "external_id": {"type": "string"},
+}
+
+BULK_OPERATION_SCHEMAS = [
+    {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "op": {"const": "create"}, "ref": {"type": "string"},
+            **_BULK_COMMON_CARD_PROPERTIES,
+        },
+        "required": ["op", "title", "column_id"],
+    },
+    {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "op": {"const": "update"}, "card_id": {"type": "string"},
+            **_BULK_COMMON_CARD_PROPERTIES,
+        },
+        "required": ["op", "card_id"],
+    },
+    {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "op": {"const": "move"}, "card_id": {"type": "string"},
+            "column_id": {"type": "string"}, "position": {"type": "integer"},
+        },
+        "required": ["op", "card_id", "column_id"],
+    },
+    {
+        "type": "object", "additionalProperties": False,
+        "properties": {"op": {"const": "delete"}, "card_id": {"type": "string"}},
+        "required": ["op", "card_id"],
+    },
+    {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "op": {"const": "note"}, "card_id": {"type": "string"},
+            "text": {"type": "string"},
+            "kind": {"type": "string", "enum": ["note", "question"]},
+        },
+        "required": ["op", "card_id", "text"],
+    },
+]
+
 CARD_PAGE_PROPERTIES = {
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
     "cursor": {"type": "string", "description": "Opaque next_cursor from the previous page."},
@@ -139,6 +241,7 @@ TOOLS = [
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "metadata": {"type": "object"},
+                "semantics": SEMANTICS_SCHEMA,
                 **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "title", "column_id"],
@@ -169,25 +272,7 @@ TOOLS = [
                     "minItems": 1,
                     "maxItems": 500,
                     "description": "Ordered operations to apply atomically.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "op": {"type": "string", "enum": ["create", "update", "move", "delete", "note"]},
-                            "ref": {"type": "string", "description": "On create: name this card for later ops as \"@ref\""},
-                            "card_id": {"type": "string", "description": "Target card, or \"@ref\" from an earlier create"},
-                            "title": {"type": "string"},
-                            "body": {"type": "string"},
-                            "column_id": {"type": "string"},
-                            "parent_id": {"type": ["string", "null"]},
-                            "position": {"type": "integer"},
-                            "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-                            "labels": {"type": "array", "items": {"type": "string"}},
-                            "metadata": {"type": "object"},
-                            "text": {"type": "string", "description": "note text"},
-                            "kind": {"type": "string", "enum": ["note", "question"]},
-                        },
-                        "required": ["op"],
-                    },
+                    "items": {"oneOf": BULK_OPERATION_SCHEMAS},
                 },
                 **CHANGE_CONTEXT_PROPERTIES,
             },
@@ -208,7 +293,7 @@ TOOLS = [
     ),
     Tool(
         name="update_card",
-        description="Update a card's title, description, priority, labels, or parent",
+        description="Update card fields. semantics replaces the complete semantic object; pass {} to clear it.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -217,10 +302,11 @@ TOOLS = [
                 "title": {"type": "string"},
                 "external_id": {"type": "string"},
                 "body": {"type": "string"},
-                "parent_id": {"type": "string"},
+                "parent_id": {"type": ["string", "null"]},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "metadata": {"type": "object"},
+                "semantics": SEMANTICS_SCHEMA,
                 **CHANGE_CONTEXT_PROPERTIES,
             },
             "required": ["board_id", "card_id"],
@@ -294,17 +380,14 @@ def dispatch(name: str, arguments: dict):
                 exclude=arguments.get("exclude"),
             )
         case "create_card":
+            fields = {
+                key: arguments[key]
+                for key in ("body", "parent_id", "priority", "labels", "external_id", "metadata", "semantics")
+                if key in arguments
+            }
             return client.create_card(
-                arguments["board_id"],
-                arguments["title"],
-                arguments["column_id"],
-                body=arguments.get("body", ""),
-                parent_id=arguments.get("parent_id"),
-                priority=arguments.get("priority", "medium"),
-                labels=arguments.get("labels"),
-                external_id=arguments.get("external_id", ""),
-                metadata=arguments.get("metadata"),
-                change_context=change_context_from_arguments(arguments),
+                arguments["board_id"], arguments["title"], arguments["column_id"],
+                change_context=change_context_from_arguments(arguments), **fields,
             )
         case "bulk_cards":
             return client.bulk_cards(
@@ -318,7 +401,7 @@ def dispatch(name: str, arguments: dict):
             fields = {
                 k: v
                 for k, v in arguments.items()
-                if k not in ("board_id", "card_id", *CHANGE_CONTEXT_PROPERTIES) and v is not None
+                if k not in ("board_id", "card_id", *CHANGE_CONTEXT_PROPERTIES)
             }
             return client.update_card(
                 arguments["board_id"],

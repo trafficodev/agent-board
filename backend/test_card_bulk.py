@@ -9,6 +9,7 @@ import card_bulk
 import card_history
 import card_store
 import edge_store
+from card_semantics import CardSemantics
 from models import AddNote, BulkCards, CreateCard, CreateEdge, MAX_BULK_OPERATIONS, MoveCard
 from pydantic import ValidationError
 
@@ -28,6 +29,7 @@ class BulkCardsTest(unittest.TestCase):
         return card_bulk.bulk_cards(self.board.id, BulkCards(operations=operations))
 
     def _card(self, title="T", **kwargs):
+        kwargs.setdefault("semantics", CardSemantics(kind="task"))
         return card_store.create_card(
             self.board.id, CreateCard(title=title, column_id=self.open_id, **kwargs)
         )
@@ -140,7 +142,7 @@ class BulkCardsTest(unittest.TestCase):
         a = self._card("a")
         b = self._card("b")
         edge_store.create_edge(
-            self.board.id, CreateEdge(from_card_id=a.id, to_card_id=b.id, type="blocked_by")
+            self.board.id, CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on")
         )
         self.assertEqual(len(edge_store.list_edges(self.board.id)), 1)
 
@@ -236,7 +238,7 @@ class BulkCardsTest(unittest.TestCase):
         a, b, c = self._card("a"), self._card("b"), self._card("c")
         for src, dst in ((a.id, b.id), (b.id, c.id), (c.id, a.id)):
             edge_store.create_edge(
-                self.board.id, CreateEdge(from_card_id=src, to_card_id=dst, type="blocked_by")
+                self.board.id, CreateEdge(from_card_id=src, to_card_id=dst, type="relates_to")
             )
         self.assertEqual(len(edge_store.list_edges(self.board.id)), 3)
 
@@ -252,7 +254,7 @@ class BulkCardsTest(unittest.TestCase):
     def test_a_rolled_back_batch_leaves_edges_untouched(self):
         a, b = self._card("a"), self._card("b")
         edge_store.create_edge(
-            self.board.id, CreateEdge(from_card_id=a.id, to_card_id=b.id, type="blocked_by")
+            self.board.id, CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on")
         )
 
         result = self._bulk([

@@ -63,15 +63,20 @@ def coverage_extras(
         if semantics.get("kind") != "requirement":
             continue
         relation_types = incoming.get(card["id"], set())
-        evidence_kinds = {
-            item.get("kind")
+        evidence_states = {
+            item.get("state") or (
+                "verified" if item.get("kind") in {"test", "validation", "screenshot"}
+                else "implemented"
+            )
             for item in semantics.get("evidence", [])
             if isinstance(item, Mapping)
         }
-        if "verifies" in relation_types or evidence_kinds & {"test", "validation"}:
+        if "verifies" in relation_types or "verified" in evidence_states:
             states[card["id"]] = "verified"
-        elif "implements" in relation_types or evidence_kinds & {"source", "commit"}:
+        elif "implements" in relation_types or "implemented" in evidence_states:
             states[card["id"]] = "implemented"
+        elif "partial" in evidence_states:
+            states[card["id"]] = "partial"
         else:
             states[card["id"]] = "uncovered"
 

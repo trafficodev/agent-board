@@ -6,6 +6,7 @@ from unittest.mock import patch
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-mcp-test-")
 
 import mcp_server
+from card_semantics import CardSemantics
 from mcp_tools import GROUPS
 
 
@@ -31,6 +32,49 @@ class MCPServerTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "between 1 and 32"):
                 mcp_server.ToolDispatchOwner()
+
+
+class MCPDispatchCompactionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatch_recursively_compacts_without_losing_false_or_zero(self):
+        class Group:
+            @staticmethod
+            def dispatch(_name, _arguments):
+                return {
+                    "empty": "",
+                    "none": None,
+                    "nested": {"empty": [], "kept": False},
+                    "items": [{"empty": {}, "count": 0}],
+                    "semantics": CardSemantics(),
+                    "has_more": False,
+                }
+
+        owner = mcp_server.ToolDispatchOwner(max_concurrency=1)
+        owner._owners = {"sample": Group}
+        try:
+            self.assertEqual(
+                await owner.call("sample", {}),
+                {
+                    "nested": {"kept": False},
+                    "items": [{"count": 0}],
+                    "has_more": False,
+                },
+            )
+        finally:
+            await owner.close()
+
+    async def test_empty_root_containers_remain_valid_results(self):
+        class Group:
+            @staticmethod
+            def dispatch(name, _arguments):
+                return {} if name == "object" else []
+
+        owner = mcp_server.ToolDispatchOwner(max_concurrency=1)
+        owner._owners = {"object": Group, "array": Group}
+        try:
+            self.assertEqual(await owner.call("object", {}), {})
+            self.assertEqual(await owner.call("array", {}), [])
+        finally:
+            await owner.close()
 
 
 if __name__ == "__main__":

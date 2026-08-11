@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Board, Card, Edge } from "../types";
+import type { Board, Card, CardKind, Edge } from "../types";
 import * as api from "../api";
 import { isVisualChild } from "../boardLogic.js";
 import CardChangelog from "./CardChangelog";
@@ -17,7 +17,9 @@ interface Props {
   onRefresh: () => void;
 }
 
-const TESTS_EDGE_TYPE = "tests";
+const TESTS_EDGE_TYPE = "verifies";
+const CARD_KINDS: CardKind[] = ["product_area", "feature", "requirement", "task", "bug", "test", "decision", "finding"];
+const CATALOG_KINDS = new Set<CardKind>(["product_area", "feature", "requirement"]);
 
 const PRIORITY_COLORS: Record<string, string> = {
   critical: "#e74c3c",
@@ -54,6 +56,10 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
   const [editBody, setEditBody] = useState(card.body);
   const [editPriority, setEditPriority] = useState<Card["priority"]>(card.priority);
   const [editLabels, setEditLabels] = useState(card.labels.join(", "));
+  const [editKind, setEditKind] = useState<CardKind | "">(card.semantics.kind ?? "");
+  const [editLifecycle, setEditLifecycle] = useState(card.semantics.catalog_lifecycle ?? "");
+  const [editOutcome, setEditOutcome] = useState(card.semantics.outcome ?? "");
+  const [editCriteria, setEditCriteria] = useState((card.semantics.acceptance_criteria ?? []).join("\n"));
   const [showSubTaskForm, setShowSubTaskForm] = useState(false);
   const [subTaskTitle, setSubTaskTitle] = useState("");
   const [subTaskBody, setSubTaskBody] = useState("");
@@ -65,11 +71,24 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
 
   const handleSaveEdit = async () => {
     if (!editTitle.trim()) return;
+    const preservedSemantics = { ...card.semantics };
+    delete preservedSemantics.kind;
+    delete preservedSemantics.catalog_lifecycle;
+    delete preservedSemantics.outcome;
+    delete preservedSemantics.acceptance_criteria;
+    const semantics = {
+      ...preservedSemantics,
+      ...(editKind ? { kind: editKind } : {}),
+      ...(editKind && CATALOG_KINDS.has(editKind) ? { catalog_lifecycle: editLifecycle || "active" } : {}),
+      ...(editOutcome.trim() ? { outcome: editOutcome.trim() } : {}),
+      ...(editCriteria.trim() ? { acceptance_criteria: editCriteria.split("\n").map((line) => line.trim()).filter(Boolean) } : {}),
+    };
     await api.updateCard(board.id, card.id, {
       title: editTitle.trim(),
       body: editBody.trim(),
       priority: editPriority,
       labels: editLabels.split(",").map((label) => label.trim()).filter(Boolean),
+      semantics,
     });
     setEditing(false);
     onRefresh();
@@ -102,6 +121,7 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
         column_id: testingColumn?.id ?? card.column_id,
         priority: "medium",
         labels: ["test", "e2e"],
+        semantics: { kind: "test" },
       });
       await api.createEdge(board.id, { from_card_id: testCard.id, to_card_id: card.id, type: TESTS_EDGE_TYPE });
       setTestTitle("");
@@ -165,6 +185,18 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
                 </select>
                 <input value={editLabels} onChange={(e) => setEditLabels(e.target.value)} placeholder="labels, comma separated" />
               </div>
+              <div className="semantics-edit">
+                <select value={editKind} onChange={(e) => setEditKind(e.target.value as CardKind | "")}>
+                  <option value="">Card type</option>
+                  {CARD_KINDS.map((kind) => <option key={kind} value={kind}>{kind.replaceAll("_", " ")}</option>)}
+                </select>
+                <select value={editLifecycle} onChange={(e) => setEditLifecycle(e.target.value)} disabled={!editKind || !CATALOG_KINDS.has(editKind)}>
+                  <option value="">Lifecycle</option>
+                  {(["active", "accepted", "proposed", "deprecated"] as const).map((value) => <option key={value}>{value}</option>)}
+                </select>
+                <input value={editOutcome} onChange={(e) => setEditOutcome(e.target.value)} placeholder="Outcome this card guarantees" />
+                <textarea value={editCriteria} onChange={(e) => setEditCriteria(e.target.value)} rows={3} placeholder="Acceptance criteria, one per line" />
+              </div>
               <div className="edit-actions">
                 <button onClick={handleSaveEdit} disabled={!editTitle.trim()}>Save</button>
                 <button onClick={() => setEditing(false)}>Cancel</button>
@@ -173,6 +205,29 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
           ) : (
             <>
               {card.body && <p className="card-body">{card.body}</p>}
+
+              {card.semantics.kind && (
+                <div className="semantic-strip">
+                  <div className="semantic-heading">
+                    <span className="semantic-kind">{card.semantics.kind.replaceAll("_", " ")}</span>
+                    {card.semantics.catalog_lifecycle && <span>{card.semantics.catalog_lifecycle}</span>}
+                    {card.coverage && <span>coverage: {card.coverage}</span>}
+                  </div>
+                  {card.semantics.outcome && <p>{card.semantics.outcome}</p>}
+                  {(card.semantics.acceptance_criteria?.length ?? 0) > 0 && (
+                    <ul>{card.semantics.acceptance_criteria?.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+                  )}
+                  {(card.semantics.exclusions?.length ?? 0) > 0 && <p>Out of scope: {card.semantics.exclusions?.join("; ")}</p>}
+                  {card.semantics.owning_surface && <p>Surface: {card.semantics.owning_surface}</p>}
+                  {card.semantics.ownership && <p>Owner: {Object.values(card.semantics.ownership).filter(Boolean).join(" · ")}</p>}
+                  {(card.semantics.evidence?.length ?? 0) > 0 && (
+                    <div><span className="section-label">Evidence</span>{card.semantics.evidence?.map((item) => <p key={`${item.kind}:${item.locator}`}>{item.kind}: {item.locator}{item.state ? ` · ${item.state}` : ""}</p>)}</div>
+                  )}
+                  {(card.semantics.decisions?.length ?? 0) > 0 && (
+                    <div><span className="section-label">Decisions</span>{card.semantics.decisions?.map((item) => <p key={item.id}>{item.state ?? "proposed"}: {item.text}</p>)}</div>
+                  )}
+                </div>
+              )}
 
               {(parentCard || linkedChildren.length > 0) && (
                 <div className="card-connections">
@@ -240,7 +295,7 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
                   </div>
                 </div>
               ) : (
-                !card.labels.includes("test") && (
+                card.semantics.kind === "requirement" && (
                   <button className="add-subtask-btn" onClick={() => setShowTestForm(true)}>+ Test</button>
                 )
               )}
@@ -321,6 +376,10 @@ export default function CardComponent({ card, subTasks, board, allCards, edges, 
                   setEditBody(card.body);
                   setEditPriority(card.priority);
                   setEditLabels(card.labels.join(", "));
+                  setEditKind(card.semantics.kind ?? "");
+                  setEditLifecycle(card.semantics.catalog_lifecycle ?? "");
+                  setEditOutcome(card.semantics.outcome ?? "");
+                  setEditCriteria((card.semantics.acceptance_criteria ?? []).join("\n"));
                   setEditing(true);
                 }}>Edit</button>
                 <button className="danger" onClick={() => onDelete(card.id)}>Delete</button>

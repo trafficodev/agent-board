@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 
 import board_store as bs
 import card_store as cs
+import edge_store as es
+from card_semantics import sparse_value
 from paths import ensure_lock_path, home
 
 
@@ -131,7 +133,11 @@ def sync_board(board_id: str) -> dict[str, Any]:
             return _status_from_sync(current)
 
         api_url = _validate_canvas_api_url(current.get("canvas_api_url") or _configured_canvas_api_url())
-        payload = _build_graph_payload(bs.get_board(board_id), cs._read_cards(board_id))
+        payload = _build_graph_payload(
+            bs.get_board(board_id),
+            cs._read_cards(board_id),
+            es.list_edges(board_id),
+        )
         canvas_board_id = current.get("canvas_board_id")
         try:
             if canvas_board_id:
@@ -161,10 +167,14 @@ def sync_board(board_id: str) -> dict[str, Any]:
 
 
 def build_graph_payload(board_id: str) -> dict[str, Any]:
-    return _build_graph_payload(bs.get_board(board_id), cs._read_cards(board_id))
+    return _build_graph_payload(
+        bs.get_board(board_id),
+        cs._read_cards(board_id),
+        es.list_edges(board_id),
+    )
 
 
-def _build_graph_payload(board, cards) -> dict[str, Any]:
+def _build_graph_payload(board, cards, relationships=()) -> dict[str, Any]:
     if not board:
         raise ValueError("Board not found")
 
@@ -186,7 +196,14 @@ def _build_graph_payload(board, cards) -> dict[str, Any]:
             body_parts.append(f"Labels: {labels}")
         if card.body:
             body_parts.append(card.body)
-        nodes.append({
+        semantics = sparse_value(card.semantics)
+        if semantics:
+            body_parts.extend(
+                f"{key.replace('_', ' ').title()}: {value}"
+                for key, value in semantics.items()
+                if isinstance(value, str)
+            )
+        node = {
             "external_id": card.id,
             "label": card.title,
             "body": "\n".join(body_parts),
@@ -196,9 +213,23 @@ def _build_graph_payload(board, cards) -> dict[str, Any]:
             "width": 280,
             "height": 160,
             "color": _priority_color(card.priority),
-        })
+        }
+        if semantics:
+            node["semantics"] = semantics
+        nodes.append(node)
         if card.parent_id:
             edges.append({"from_id": card.parent_id, "to_id": card.id, "label": "subtask"})
+
+    edges.extend(
+        {
+            "external_id": relationship.id,
+            "from_id": relationship.from_card_id,
+            "to_id": relationship.to_card_id,
+            "label": relationship.label or relationship.type,
+            "type": relationship.type,
+        }
+        for relationship in relationships
+    )
 
     return {
         "name": board.name,

@@ -24,6 +24,10 @@ FIELD_ALIASES = {
     "worktree_paths": "worktree",
     "content": "contains",
     "external": "external_id",
+    "lifecycle": "catalog_lifecycle",
+    "acceptance": "acceptance_criteria",
+    "owner": "ownership",
+    "decision": "decisions",
 }
 
 FILE_RE = re.compile(r"(^|\s|`)\/?[\w.-]+\/[\w./-]+")
@@ -531,6 +535,7 @@ def _weighted_term_score(
         "label": 8,
         "body": 5,
         "metadata": 4,
+        "semantics": 6,
         "session": 4,
         "edge": 4,
         "priority": 3,
@@ -561,6 +566,8 @@ def _search_values(
     edge_values = _edge_search_values(card, edges_by_card, cards_by_id)
 
     metadata_values = _flatten_metadata(card.get("metadata") or {})
+    semantics = card.get("semantics") or {}
+    semantics_values = _flatten_metadata(semantics)
     scoped = {
         "external_id": [card.get("external_id", "")],
         "title": [card.get("title", "")],
@@ -570,6 +577,14 @@ def _search_values(
         "column": [column_names_by_id.get(card.get("column_id"), card.get("column_id", ""))],
         "id": [card.get("id", "")],
         "metadata": metadata_values,
+        "semantics": semantics_values,
+        "kind": [semantics.get("kind", "")],
+        "catalog_lifecycle": [semantics.get("catalog_lifecycle", "")],
+        "outcome": [semantics.get("outcome", "")],
+        "acceptance_criteria": semantics.get("acceptance_criteria", []),
+        "evidence": _flatten_metadata(semantics.get("evidence", [])),
+        "ownership": _flatten_metadata(semantics.get("ownership", {})),
+        "decisions": _flatten_metadata(semantics.get("decisions", [])),
         "session": sessions,
         "edge": edge_values,
         "edge_type": [e.get("type", "") for e in edges_by_card.get(card.get("id", ""), [])],
@@ -585,6 +600,7 @@ def _search_values(
         column_names_by_id.get(card.get("column_id"), card.get("column_id", "")),
         *card.get("labels", []),
         *metadata_values,
+        *semantics_values,
         *sessions,
         *edge_values,
     ]
@@ -625,6 +641,13 @@ def _matches_has(card: dict[str, Any], value: str, edges_by_card: dict[str, list
         return bool(card.get("session_history"))
     if value in {"edge", "edges"}:
         return bool(edges_by_card.get(card.get("id", "")))
+    semantics = card.get("semantics") or {}
+    semantic_field = FIELD_ALIASES.get(value, value)
+    if semantic_field in {
+        "kind", "catalog_lifecycle", "outcome", "acceptance_criteria",
+        "exclusions", "owning_surface", "evidence", "ownership", "decisions",
+    }:
+        return bool(semantics.get(semantic_field))
     return False
 
 

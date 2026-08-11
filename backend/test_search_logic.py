@@ -29,6 +29,7 @@ def card(card_id, **overrides):
         "priority": "medium",
         "labels": [],
         "metadata": {},
+        "semantics": {},
         "session_history": [],
     }
     data.update(overrides)
@@ -36,6 +37,33 @@ def card(card_id, **overrides):
 
 
 class SearchLogicTest(unittest.TestCase):
+    def test_searches_typed_semantic_fields_and_presence(self):
+        cards = [
+            card(
+                "requirement",
+                semantics={
+                    "kind": "requirement",
+                    "catalog_lifecycle": "active",
+                    "outcome": "Users can inspect coverage",
+                    "acceptance_criteria": ["Coverage is derived"],
+                    "ownership": {"component": "discovery"},
+                    "evidence": [{"kind": "test", "locator": "test_search.py"}],
+                    "decisions": [{"id": "d1", "text": "Use typed fields"}],
+                },
+            ),
+            card("task", semantics={"kind": "task"}),
+        ]
+
+        for query in (
+            "kind:requirement", "lifecycle:active", "outcome:coverage",
+            "acceptance:derived", "owner:discovery", "evidence:test_search.py",
+            "decision:typed", "has:evidence", "has:decision",
+        ):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    [item["id"] for item in search_cards(cards, COLUMNS, query)],
+                    ["requirement"],
+                )
     def test_parses_file_and_commit_fields(self):
         self.assertEqual(
             parse_search_query('file:"frontend/src/App.tsx" -commit:abc1234')[0].field,

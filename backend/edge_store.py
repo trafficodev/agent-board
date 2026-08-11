@@ -6,11 +6,13 @@ from models import CreateEdge, Edge, Event
 from board_store import get_board
 
 
-def _direction_is_valid(edge_type: str, source, target) -> bool:
+def direction_is_valid(edge_type: str, source, target) -> bool:
     source_kind = source.semantics.kind
     target_kind = target.semantics.kind
+    if edge_type == "depends_on":
+        return bool(source_kind and target_kind)
     if not source_kind or not target_kind:
-        return True
+        return False
     if edge_type == "defines":
         return (source_kind, target_kind) in {
             ("product_area", "feature"),
@@ -24,7 +26,21 @@ def _direction_is_valid(edge_type: str, source, target) -> bool:
         return source_kind == "task" and target_kind == "bug"
     if edge_type == "supersedes":
         return source_kind == target_kind
-    return edge_type == "depends_on"
+    if edge_type == "validates":
+        return source_kind == "finding" and target_kind == "requirement"
+    if edge_type == "supports":
+        return source_kind == "task" and target_kind == "requirement"
+    if edge_type == "documents":
+        return source_kind == "decision" and target_kind == "requirement"
+    if edge_type == "tests":
+        return source_kind == "test" and target_kind in {"task", "bug", "test", "decision", "finding"}
+    if edge_type == "relates_to":
+        return bool(source_kind and target_kind)
+    if edge_type in {"follows_up", "duplicates"}:
+        return bool(source_kind and target_kind)
+    if edge_type == "parent_of":
+        return bool(source_kind and source_kind == target_kind)
+    return False
 
 
 def _would_cycle_dependency(conn, board_id: str, source_id: str, target_id: str) -> bool:
@@ -145,11 +161,13 @@ def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
                 ).fetchall(),
             )
         }
-        if not _direction_is_valid(
+        if not direction_is_valid(
             data.type,
             cards[data.from_card_id],
             cards[data.to_card_id],
         ):
+            return None
+        if data.type in {"defines", "parent_of"} and cards[data.to_card_id].parent_id != data.from_card_id:
             return None
         if data.type == "depends_on" and _would_cycle_dependency(
             conn,
