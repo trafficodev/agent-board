@@ -67,30 +67,24 @@ class CapabilityAlignmentTest(unittest.TestCase):
     def test_card_exploration_controls_are_exposed_across_surfaces(self):
         parser = cli.build_parser()
         choices = parser._subparsers._group_actions[0].choices
-        for command_name in ("list_cards", "search_cards"):
+        for command_name in ("list_cards", "search_cards", "relevant_candidates"):
             option_strings = {
                 option
                 for action in choices[command_name]._actions
                 for option in action.option_strings
             }
-            self.assertTrue({"--sort", "--limit", "--cursor", "--detail"}.issubset(option_strings))
+            self.assertTrue({"--limit", "--cursor", "--include", "--exclude"}.issubset(option_strings))
+            self.assertNotIn("--detail", option_strings)
 
         card_tools = {tool.name: tool for tool in GROUPS["cards"].TOOLS}
-        for tool_name in ("list_cards", "search_cards"):
+        for tool_name in ("list_cards", "search_cards", "relevant_candidates"):
             properties = card_tools[tool_name].inputSchema["properties"]
-            self.assertTrue({"sort", "limit", "cursor", "detail"}.issubset(properties))
+            self.assertTrue({"limit", "cursor", "include", "exclude"}.issubset(properties))
             self.assertEqual(properties["limit"]["default"], 50)
             self.assertEqual(properties["limit"]["maximum"], 100)
-            self.assertEqual(properties["detail"]["default"], "compact")
-            self.assertIn("cannot combine", properties["detail"]["description"])
-
-        for command_name in ("list_cards", "search_cards"):
-            detail_action = next(
-                action
-                for action in choices[command_name]._actions
-                if "--detail" in action.option_strings
-            )
-            self.assertIn("cannot combine", detail_action.help)
+            self.assertEqual(properties["include"]["type"], "array")
+            self.assertEqual(properties["exclude"]["type"], "array")
+            self.assertNotIn("detail", properties)
 
         relevant_options = {
             option
@@ -102,7 +96,7 @@ class CapabilityAlignmentTest(unittest.TestCase):
         self.assertTrue({"max_candidates", "limit", "cursor"}.issubset(relevant_properties))
         self.assertEqual(relevant_properties["max_candidates"]["default"], 40)
 
-    def test_client_defaults_to_compact_pages_and_forwards_progression(self):
+    def test_client_forwards_projection_values_repeatably(self):
         with patch.object(client, "_req", return_value={}) as request:
             client.list_cards("board")
             client.search_cards(
@@ -110,18 +104,19 @@ class CapabilityAlignmentTest(unittest.TestCase):
                 query="bug",
                 limit=25,
                 cursor="next page",
-                detail="full",
+                include=["body,metadata", "notes"],
+                exclude="labels",
             )
 
         self.assertEqual(
             request.call_args_list[0].args,
-            ("GET", "/api/boards/board/cards?limit=50&detail=compact"),
+            ("GET", "/api/boards/board/cards?limit=50"),
         )
         self.assertEqual(
             request.call_args_list[1].args,
             (
                 "GET",
-                "/api/boards/board/cards/search?query=bug&limit=25&cursor=next+page&detail=full",
+                "/api/boards/board/cards/search?query=bug&limit=25&cursor=next+page&include=body%2Cmetadata&include=notes&exclude=labels",
             ),
         )
 
@@ -134,8 +129,9 @@ class CapabilityAlignmentTest(unittest.TestCase):
             "25",
             "--cursor",
             "opaque",
-            "--detail",
-            "full",
+            "--include", "body,metadata",
+            "--include", "notes",
+            "--exclude", "labels",
         ])
 
         with patch.object(client, "list_cards", return_value={}) as list_cards:
@@ -150,7 +146,8 @@ class CapabilityAlignmentTest(unittest.TestCase):
             sort=None,
             limit=25,
             cursor="opaque",
-            detail="full",
+            include=["body,metadata", "notes"],
+            exclude=["labels"],
         )
 
     def test_mcp_dispatch_forwards_card_exploration_controls(self):
@@ -161,7 +158,8 @@ class CapabilityAlignmentTest(unittest.TestCase):
             "query": "bug",
             "limit": 25,
             "cursor": "opaque",
-            "detail": "full",
+            "include": ["body", "metadata"],
+            "exclude": ["labels"],
         }
         with patch.object(client, "search_cards", return_value={}) as search_cards:
             cards.dispatch("search_cards", arguments)
@@ -174,30 +172,32 @@ class CapabilityAlignmentTest(unittest.TestCase):
             sort=None,
             limit=25,
             cursor="opaque",
-            detail="full",
+            include=["body", "metadata"],
+            exclude=["labels"],
         )
 
     def test_relevance_progression_is_forwarded_across_surfaces(self):
         with patch.object(client, "_req", return_value={}) as request:
             client.relevant_candidates(
-                "board", "bug", max_candidates=20, limit=5, cursor="next page"
+                "board", "bug", max_candidates=20, limit=5, cursor="next page",
+                include="body", exclude=["labels", "priority"],
             )
 
         self.assertEqual(request.call_args.args, (
             "GET",
-            "/api/boards/board/cards/relevant-candidates?query=bug&max_candidates=20&limit=5&cursor=next+page",
+            "/api/boards/board/cards/relevant-candidates?query=bug&max_candidates=20&limit=5&cursor=next+page&include=body&exclude=labels&exclude=priority",
         ))
 
         parser = cli.build_parser()
         args = parser.parse_args([
             "relevant_candidates", "board", "bug", "--max-candidates", "20",
-            "--limit", "5", "--cursor", "opaque",
+            "--limit", "5", "--cursor", "opaque", "--include", "body", "--exclude", "labels,priority",
         ])
         with patch.object(client, "relevant_candidates", return_value={}) as relevance:
             args.func(args)
         relevance.assert_called_once_with(
             "board", "bug", priority=None, label=None,
-            max_candidates=20, limit=5, cursor="opaque",
+            max_candidates=20, limit=5, cursor="opaque", include=["body"], exclude=["labels,priority"],
         )
 
         from mcp_tools import cards
@@ -205,11 +205,11 @@ class CapabilityAlignmentTest(unittest.TestCase):
         with patch.object(client, "relevant_candidates", return_value={}) as relevance:
             cards.dispatch("relevant_candidates", {
                 "board_id": "board", "query": "bug", "max_candidates": 20,
-                "limit": 5, "cursor": "opaque",
+                "limit": 5, "cursor": "opaque", "include": ["body"], "exclude": ["labels"],
             })
         relevance.assert_called_once_with(
             "board", "bug", priority=None, label=None,
-            max_candidates=20, limit=5, cursor="opaque",
+            max_candidates=20, limit=5, cursor="opaque", include=["body"], exclude=["labels"],
         )
 
     def test_change_voting_is_exposed_across_surfaces(self):

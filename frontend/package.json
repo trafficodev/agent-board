@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "node --test test-board-logic.mjs test-board-search.mjs",
+    "test": "node --test test-api.mjs test-board-logic.mjs test-board-search.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

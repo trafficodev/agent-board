@@ -45,6 +45,24 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
+interface Page<T> {
+  items: T[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+async function reqAllPages<T>(path: string, params: URLSearchParams): Promise<T[]> {
+  const items: T[] = [];
+
+  while (true) {
+    const page = await req<Page<T>>(`${path}?${params}`);
+    items.push(...page.items);
+    if (!page.has_more) return items;
+    if (!page.next_cursor) throw new Error("Paginated response is missing next_cursor");
+    params.set("cursor", page.next_cursor);
+  }
+}
+
 // Boards
 export const listBoards = () => req<Board[]>("/boards");
 export const getBoard = (id: string) => req<Board>(`/boards/${id}`);
@@ -55,16 +73,18 @@ export const updateBoard = (id: string, data: { name?: string; description?: str
 export const deleteBoard = (id: string) => req<{ ok: boolean }>(`/boards/${id}`, { method: "DELETE" });
 
 // Cards
-export const listCards = (boardId: string) => req<Card[]>(`/boards/${boardId}/cards?detail=full`);
+export const listCards = (boardId: string) => {
+  const params = new URLSearchParams({ include: "*" });
+  return reqAllPages<Card>(`/boards/${boardId}/cards`, params);
+};
 export const searchCards = (boardId: string, data: { query?: string; priority?: string; label?: string; sort?: string }) => {
   const params = new URLSearchParams();
-  params.set("detail", "full");
+  params.set("include", "*");
   if (data.query) params.set("query", data.query);
   if (data.priority) params.set("priority", data.priority);
   if (data.label) params.set("label", data.label);
   if (data.sort) params.set("sort", data.sort);
-  const suffix = params.toString() ? `?${params}` : "";
-  return req<Card[]>(`/boards/${boardId}/cards/search${suffix}`);
+  return reqAllPages<Card>(`/boards/${boardId}/cards/search`, params);
 };
 export const aiSearchCards = (boardId: string, data: { query: string; priority?: string; label?: string; signal?: AbortSignal }) => {
   const params = new URLSearchParams();

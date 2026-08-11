@@ -7,16 +7,18 @@ from mcp_tools.context import CHANGE_CONTEXT_PROPERTIES, change_context_from_arg
 
 CARD_PAGE_PROPERTIES = {
     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
-    "cursor": {"type": "string", "description": "Opaque next_cursor from the previous compact page."},
+    "cursor": {"type": "string", "description": "Opaque next_cursor from the previous page."},
 }
 
 CARD_EXPLORATION_PROPERTIES = {
     **CARD_PAGE_PROPERTIES,
-    "detail": {
-        "type": "string",
-        "enum": ["compact", "full"],
-        "default": "compact",
-        "description": "full returns the legacy unpaginated Card[] and cannot combine with cursor or a nondefault limit.",
+    "include": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Fields to add; '*' selects all.",
+    },
+    "exclude": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Fields to remove after include; id remains.",
     },
 }
 
@@ -24,10 +26,8 @@ TOOLS = [
     Tool(
         name="list_cards",
         description=(
-            "Discover cards on a board in compact, cursor-paginated pages. Compact results contain "
-            "items, next_cursor, and has_more; pass the returned cursor to continue. Use detail='full' "
-            "only when complete card bodies and histories are needed; full is unpaginated and cannot "
-            "combine with cursor or a nondefault limit."
+            "Discover cards in cursor-paginated envelopes. Defaults are compact; include fields or '*' "
+            "to expand, exclude fields to trim. Pass next_cursor back to continue."
         ),
         inputSchema={
             "type": "object",
@@ -50,10 +50,8 @@ TOOLS = [
             "date-range, and numeric-comparison matching. Zero fuzziness: it finds only what "
             "literally appears (or a regex/range that literally matches), never a paraphrase or "
             "synonym. Returns matching cards plus their visible ancestors/descendants "
-            "in the card hierarchy. Results default to a compact page with items, next_cursor, and "
-            "has_more; pass next_cursor back as cursor to continue. Use detail='full' only when complete "
-            "card bodies and histories are needed; full is unpaginated and cannot combine with cursor or a "
-            "nondefault limit. Every operator below composes with every other: negation, "
+            "in the card hierarchy. Returns a paginated envelope. Defaults are compact; include fields "
+            "or '*' to expand, exclude fields to trim. Every operator composes with every other: negation, "
             "field scoping, regex, grouping, and comparisons can all appear in the same query."
         ),
         inputSchema={
@@ -110,9 +108,8 @@ TOOLS = [
     Tool(
         name="relevant_candidates",
         description=(
-            "Discover the most keyword-relevant cards as a bounded ranked shortlist. Returns compact "
-            "items with relevance_score and column in relevance order, plus next_cursor, has_more, and "
-            "error. Pass next_cursor back as cursor to continue within max_candidates."
+            "Discover a bounded keyword-ranked card shortlist. Returns a paginated envelope with "
+            "relevance_score, column, and error. Use include/exclude to control fields."
         ),
         inputSchema={
             "type": "object",
@@ -122,7 +119,7 @@ TOOLS = [
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "label": {"type": "string"},
                 "max_candidates": {"type": "integer", "minimum": 1, "maximum": 50, "default": 40},
-                **CARD_PAGE_PROPERTIES,
+                **CARD_EXPLORATION_PROPERTIES,
             },
             "required": ["board_id", "query"],
         },
@@ -265,7 +262,10 @@ def dispatch(name: str, arguments: dict):
         case "list_cards":
             filters = {
                 k: arguments[k]
-                for k in ("column_id", "parent_id", "priority", "label", "sort", "limit", "cursor", "detail")
+                for k in (
+                    "column_id", "parent_id", "priority", "label", "sort",
+                    "limit", "cursor", "include", "exclude",
+                )
                 if k in arguments
             }
             return client.list_cards(arguments["board_id"], **filters)
@@ -278,7 +278,8 @@ def dispatch(name: str, arguments: dict):
                 sort=arguments.get("sort"),
                 limit=arguments.get("limit", 50),
                 cursor=arguments.get("cursor"),
-                detail=arguments.get("detail", "compact"),
+                include=arguments.get("include"),
+                exclude=arguments.get("exclude"),
             )
         case "relevant_candidates":
             return client.relevant_candidates(
@@ -289,6 +290,8 @@ def dispatch(name: str, arguments: dict):
                 max_candidates=arguments.get("max_candidates", 40),
                 limit=arguments.get("limit", 50),
                 cursor=arguments.get("cursor"),
+                include=arguments.get("include"),
+                exclude=arguments.get("exclude"),
             )
         case "create_card":
             return client.create_card(

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import paths
+from models import Card
 
 
 BODY_SNIPPET_CHARS = 240
@@ -22,6 +23,23 @@ MAX_PAGE_LIMIT = 100
 _CURSOR_VERSION = 1
 _CURSOR_SIGNATURE_BYTES = 32
 _CURSOR_SECRET_BYTES = 32
+
+CARD_FIELDS = tuple(Card.model_fields)
+DERIVED_FIELDS = ("body_snippet", "has_more_body")
+ENDPOINT_EXTRAS = {
+    "list_cards": (),
+    "search_cards": ("relation_roles",),
+    "relevant_candidates": ("relevance_score", "column"),
+}
+COMPACT_CARD_FIELDS = (
+    "id",
+    "title",
+    "column_id",
+    "parent_id",
+    "priority",
+    "labels",
+    *DERIVED_FIELDS,
+)
 
 
 class InvalidCursor(ValueError):
@@ -32,27 +50,51 @@ class StaleCursor(ValueError):
     pass
 
 
-def compact_card(
+def resolve_card_fields(
+    endpoint: str,
+    include: str | Sequence[str] | None = None,
+    exclude: str | Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    available = available_card_fields(endpoint)
+    endpoint_extras = ENDPOINT_EXTRAS[endpoint]
+    available_set = set(available)
+    included = _normalize_field_values(include)
+    excluded = _normalize_field_values(exclude)
+    _validate_fields(included, available_set)
+    _validate_fields(excluded, available_set)
+
+    selected = set((*COMPACT_CARD_FIELDS, *endpoint_extras))
+    selected.update(available if "*" in included else included)
+    if "*" in excluded:
+        selected.clear()
+    else:
+        selected.difference_update(excluded)
+    selected.add("id")
+    return tuple(field for field in available if field in selected)
+
+
+def available_card_fields(endpoint: str) -> tuple[str, ...]:
+    try:
+        return (*CARD_FIELDS, *DERIVED_FIELDS, *ENDPOINT_EXTRAS[endpoint])
+    except KeyError as exc:
+        raise ValueError(f"unknown_card_endpoint:{endpoint}") from exc
+
+
+def project_card(
     card: Mapping[str, Any],
+    fields: Sequence[str],
     relation_roles: Sequence[str] | None = None,
     extras: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     body = str(card.get("body") or "")
-    projected = {
-        "id": card.get("id", ""),
-        "title": card.get("title", ""),
-        "column_id": card.get("column_id", ""),
-        "parent_id": card.get("parent_id"),
-        "priority": card.get("priority", "medium"),
-        "labels": list(card.get("labels") or []),
-        "body_snippet": body[:BODY_SNIPPET_CHARS],
-        "has_more_body": len(body) > BODY_SNIPPET_CHARS,
-    }
+    values = dict(card)
+    values["body_snippet"] = body[:BODY_SNIPPET_CHARS]
+    values["has_more_body"] = len(body) > BODY_SNIPPET_CHARS
     if relation_roles is not None:
-        projected["relation_roles"] = list(relation_roles)
-    if extras:
-        projected.update(extras)
-    return projected
+        values["relation_roles"] = list(relation_roles)
+    for field, value in (extras or {}).items():
+        values.setdefault(field, value)
+    return {field: values[field] for field in fields if field in values}
 
 
 def page_cards(
@@ -67,12 +109,19 @@ def page_cards(
     relation_roles: Mapping[str, Sequence[str]] | None = None,
     item_extras: Mapping[str, Mapping[str, Any]] | None = None,
     envelope_extras: Mapping[str, Any] | None = None,
+    selected_fields: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    fields = (
+        resolve_card_fields(endpoint)
+        if selected_fields is None
+        else _canonicalize_selected_fields(endpoint, selected_fields)
+    )
     request_fingerprint = _fingerprint({
         "board_id": board_id,
         "endpoint": endpoint,
         "request": request,
         "limit": limit,
+        "fields": fields,
     })
     result_fingerprint = _fingerprint([
         {
@@ -107,8 +156,9 @@ def page_cards(
         })
 
     items = [
-        compact_card(
+        project_card(
             card,
+            fields,
             (relation_roles or {}).get(card["id"]),
             (item_extras or {}).get(card["id"]),
         )
@@ -118,6 +168,35 @@ def page_cards(
     if envelope_extras:
         envelope.update(envelope_extras)
     return envelope
+
+
+def _normalize_field_values(values: str | Sequence[str] | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    raw_values = (values,) if isinstance(values, str) else values
+    normalized: list[str] = []
+    for value in raw_values:
+        if not isinstance(value, str):
+            raise ValueError("invalid_card_fields")
+        normalized.extend(field.strip() for field in value.split(",") if field.strip())
+    return tuple(dict.fromkeys(normalized))
+
+
+def _validate_fields(fields: Sequence[str], available: set[str]) -> None:
+    invalid = [field for field in fields if field != "*" and field not in available]
+    if invalid:
+        raise ValueError(f"invalid_card_fields:{','.join(invalid)}")
+
+
+def _canonicalize_selected_fields(
+    endpoint: str, fields: Sequence[str]
+) -> tuple[str, ...]:
+    available = available_card_fields(endpoint)
+    normalized = _normalize_field_values(fields)
+    _validate_fields(normalized, set(available))
+    selected = set(normalized)
+    selected.add("id")
+    return tuple(field for field in available if field in selected)
 
 
 def _continuation_index(

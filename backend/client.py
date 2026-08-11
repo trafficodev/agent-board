@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -298,8 +299,9 @@ def list_cards(
     sort: str | None = None,
     limit: int = 50,
     cursor: str | None = None,
-    detail: str = "compact",
-) -> dict | list[dict]:
+    include: str | Sequence[str] | None = None,
+    exclude: str | Sequence[str] | None = None,
+) -> dict:
     filters = {
         "column_id": column_id,
         "parent_id": parent_id,
@@ -308,9 +310,8 @@ def list_cards(
         "sort": sort,
         "limit": limit,
         "cursor": cursor,
-        "detail": detail,
     }
-    params = urllib.parse.urlencode({k: v for k, v in filters.items() if v is not None})
+    params = _exploration_query(filters, include, exclude)
     path = f"/api/boards/{board_id}/cards"
     if params:
         path += f"?{params}"
@@ -325,21 +326,18 @@ def search_cards(
     sort: str | None = None,
     limit: int = 50,
     cursor: str | None = None,
-    detail: str = "compact",
-) -> dict | list[dict]:
-    params = urllib.parse.urlencode({
-        k: v
-        for k, v in {
-            "query": query,
-            "priority": priority,
-            "label": label,
-            "sort": sort,
-            "limit": limit,
-            "cursor": cursor,
-            "detail": detail,
-        }.items()
-        if v is not None and v != ""
-    })
+    include: str | Sequence[str] | None = None,
+    exclude: str | Sequence[str] | None = None,
+) -> dict:
+    filters = {
+        "query": query,
+        "priority": priority,
+        "label": label,
+        "sort": sort,
+        "limit": limit,
+        "cursor": cursor,
+    }
+    params = _exploration_query(filters, include, exclude)
     path = f"/api/boards/{board_id}/cards/search"
     if params:
         path += f"?{params}"
@@ -354,28 +352,45 @@ def relevant_candidates(
     max_candidates: int = 40,
     limit: int = 50,
     cursor: str | None = None,
+    include: str | Sequence[str] | None = None,
+    exclude: str | Sequence[str] | None = None,
 ) -> dict:
     """Keyword-relevance shortlist (see `search_logic.relevant_candidates`):
     a compact top-N candidate projection, not full cards. A building block
     for semantic/AI ranking -- agent-board has no AI provider of its own,
     so it is not itself a semantic search. Returns a compact exploration
     envelope with relevance_score and column on each item."""
-    params = urllib.parse.urlencode({
-        key: value
-        for key, value in {
-            "query": query,
-            "priority": priority,
-            "label": label,
-            "max_candidates": max_candidates,
-            "limit": limit,
-            "cursor": cursor,
-        }.items()
-        if value is not None and value != ""
-    })
+    filters = {
+        "query": query,
+        "priority": priority,
+        "label": label,
+        "max_candidates": max_candidates,
+        "limit": limit,
+        "cursor": cursor,
+    }
+    params = _exploration_query(filters, include, exclude)
     path = f"/api/boards/{board_id}/cards/relevant-candidates"
     if params:
         path += f"?{params}"
     return _req("GET", path)
+
+
+def _field_values(values: str | Sequence[str] | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    return (values,) if isinstance(values, str) else tuple(values)
+
+
+def _exploration_query(
+    filters: dict[str, object],
+    include: str | Sequence[str] | None,
+    exclude: str | Sequence[str] | None,
+) -> str:
+    return urllib.parse.urlencode([
+        *((key, value) for key, value in filters.items() if value is not None and value != ""),
+        *(("include", value) for value in _field_values(include)),
+        *(("exclude", value) for value in _field_values(exclude)),
+    ])
 
 
 def create_card(board_id: str, title: str, column_id: str, body: str = "",

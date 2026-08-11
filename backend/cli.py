@@ -20,10 +20,12 @@ def _add_card_page_args(command: argparse.ArgumentParser) -> None:
 def _add_card_exploration_args(command: argparse.ArgumentParser) -> None:
     _add_card_page_args(command)
     command.add_argument(
-        "--detail",
-        choices=("compact", "full"),
-        default="compact",
-        help="full returns the legacy unpaginated cards and cannot combine with --cursor or a nondefault --limit",
+        "--include", action="append",
+        help="Add fields; repeat or comma-separate. Use * for all.",
+    )
+    command.add_argument(
+        "--exclude", action="append",
+        help="Remove fields; repeat or comma-separate. id always remains.",
     )
 
 
@@ -136,7 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
             sort=args.sort,
             limit=args.limit,
             cursor=args.cursor,
-            detail=args.detail,
+            include=args.include,
+            exclude=args.exclude,
         )
     )
 
@@ -156,7 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
             sort=args.sort,
             limit=args.limit,
             cursor=args.cursor,
-            detail=args.detail,
+            include=args.include,
+            exclude=args.exclude,
         )
     )
 
@@ -166,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     relevant_candidates.add_argument("--priority")
     relevant_candidates.add_argument("--label")
     relevant_candidates.add_argument("--max-candidates", type=int, default=40)
-    _add_card_page_args(relevant_candidates)
+    _add_card_exploration_args(relevant_candidates)
     relevant_candidates.set_defaults(
         func=lambda args: client.relevant_candidates(
             args.board_id,
@@ -176,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
             max_candidates=args.max_candidates,
             limit=args.limit,
             cursor=args.cursor,
+            include=args.include,
+            exclude=args.exclude,
         )
     )
 
