@@ -46,6 +46,8 @@ class SearchLogicTest(unittest.TestCase):
                     "catalog_lifecycle": "active",
                     "outcome": "Users can inspect coverage",
                     "acceptance_criteria": ["Coverage is derived"],
+                    "exclusions": ["External analytics"],
+                    "owning_surface": "api",
                     "ownership": {"component": "discovery"},
                     "evidence": [{"kind": "test", "locator": "test_search.py"}],
                     "decisions": [{"id": "d1", "text": "Use typed fields"}],
@@ -57,7 +59,8 @@ class SearchLogicTest(unittest.TestCase):
         for query in (
             "kind:requirement", "lifecycle:active", "outcome:coverage",
             "acceptance:derived", "owner:discovery", "evidence:test_search.py",
-            "decision:typed", "has:evidence", "has:decision",
+            "decision:typed", "surface:api", "exclusion:analytics",
+            "has:evidence", "has:decision", "has:surface", "has:exclusion",
         ):
             with self.subTest(query=query):
                 self.assertEqual(

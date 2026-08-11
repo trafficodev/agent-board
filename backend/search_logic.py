@@ -28,6 +28,8 @@ FIELD_ALIASES = {
     "acceptance": "acceptance_criteria",
     "owner": "ownership",
     "decision": "decisions",
+    "surface": "owning_surface",
+    "exclusion": "exclusions",
 }
 
 FILE_RE = re.compile(r"(^|\s|`)\/?[\w.-]+\/[\w./-]+")

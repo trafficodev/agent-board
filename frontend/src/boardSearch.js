@@ -16,6 +16,8 @@ const FIELD_ALIASES = new Map([
   ["acceptance", "acceptance_criteria"],
   ["owner", "ownership"],
   ["decision", "decisions"],
+  ["surface", "owning_surface"],
+  ["exclusion", "exclusions"],
 ]);
 
 export const BOARD_SORTS = [

@@ -77,6 +77,7 @@ describe("board search", () => {
       },
     })];
     assert.deepEqual(search(cards, "kind:requirement outcome:audit acceptance:attributable owner:runtime"), ["semantic"]);
+    assert.deepEqual(search(cards, "surface:api exclusion:analytics"), ["semantic"]);
     assert.deepEqual(search(cards, "has:evidence has:decision has:ownership has:acceptance"), ["semantic"]);
     assert.deepEqual(search(cards, "has:kind has:lifecycle has:outcome has:exclusions has:surface"), ["semantic"]);
     assert.deepEqual(search(cards, "append-only"), ["semantic"]);
