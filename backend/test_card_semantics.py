@@ -100,8 +100,9 @@ class CardSemanticsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "must not be empty"):
             CardDecision(id="decision-1", text=" ")
 
-    def test_delivery_hierarchy_allows_only_same_kind_nesting(self):
+    def test_delivery_hierarchy_allows_mixed_delivery_kinds_but_not_catalog_parents(self):
         task = CardSemantics(kind="task")
+        bug = CardSemantics(kind="bug")
         requirement = CardSemantics(
             kind="requirement",
             catalog_lifecycle="active",
@@ -109,6 +110,7 @@ class CardSemanticsTest(unittest.TestCase):
             acceptance_criteria=["Observable"],
         )
         self.assertTrue(valid_semantic_parent(task, task))
+        self.assertTrue(valid_semantic_parent(bug, task))
         self.assertTrue(valid_semantic_parent(task, None))
         self.assertFalse(valid_semantic_parent(task, requirement))
 

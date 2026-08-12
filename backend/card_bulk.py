@@ -68,10 +68,12 @@ def _apply_one(tx, board_id: str, op, index: int, refs: dict[str, str]) -> BulkO
         for field in ("parent_id", "column_id"):
             if field in fields:
                 fields[field] = _resolve(refs, fields[field], index, field)
+        if not any(card.id == card_id for card in tx.cards):
+            raise _Aborted(index, f"update failed: no card {card_id}")
         if not card_store.apply_update(tx, board_id, card_id, UpdateCard(**fields)):
             raise _Aborted(
                 index,
-                f"update failed: no card {card_id}, unknown column, or parent would make a cycle",
+                "update failed: unknown column, invalid parent or semantic hierarchy, or edge conflict",
             )
         return BulkOperationResult(index=index, op="update", card_id=card_id)
 

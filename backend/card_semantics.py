@@ -41,6 +41,7 @@ CATALOG_PARENT_KIND: dict[str, str | None] = {
     "feature": "product_area",
     "requirement": "feature",
 }
+DELIVERY_KINDS = {"task", "bug", "test", "decision", "finding"}
 
 
 def sparse_value(value: Any) -> Any:
@@ -166,7 +167,9 @@ def valid_semantic_parent(
 ) -> bool:
     kind = semantics.kind
     if kind not in CATALOG_PARENT_KIND:
-        return parent_semantics is None or parent_semantics.kind == kind
+        return parent_semantics is None or (
+            kind in DELIVERY_KINDS and parent_semantics.kind in DELIVERY_KINDS
+        )
     expected = CATALOG_PARENT_KIND[kind]
     return (
         parent_semantics is None

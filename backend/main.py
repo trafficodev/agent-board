@@ -588,7 +588,12 @@ def api_update_card(board_id: str, card_id: str, body: UpdateCard):
     _validate_id(card_id, "card_id")
     card = cs.update_card(board_id, card_id, body)
     if not card:
-        raise HTTPException(404, "Card not found")
+        if not cs.get_card(board_id, card_id):
+            raise HTTPException(404, "Card not found")
+        raise HTTPException(
+            409,
+            "Update has an unknown column, invalid parent or semantic hierarchy, or edge conflict",
+        )
     _sync_board_if_enabled(board_id)
     return card
 

@@ -47,6 +47,40 @@ class BulkCardsTest(unittest.TestCase):
         self.assertEqual(len(result.results), 10)
         self.assertEqual(self._titles(), {f"C{i}" for i in range(10)})
 
+    def test_batch_can_create_mixed_delivery_children_under_a_test_parent(self):
+        parent = self._card("integration failures", semantics=CardSemantics(kind="test"))
+
+        result = self._bulk([
+            {
+                "op": "create",
+                "title": "test fixture",
+                "column_id": self.open_id,
+                "parent_id": parent.id,
+                "semantics": {"kind": "test"},
+            },
+            {
+                "op": "create",
+                "title": "render bug",
+                "column_id": self.open_id,
+                "parent_id": parent.id,
+                "semantics": {"kind": "bug"},
+            },
+            {
+                "op": "create",
+                "title": "follow-up task",
+                "column_id": self.open_id,
+                "parent_id": parent.id,
+                "semantics": {"kind": "task"},
+            },
+        ])
+
+        self.assertTrue(result.applied)
+        self.assertEqual(len(result.results), 3)
+        self.assertEqual(
+            self._titles(),
+            {"integration failures", "test fixture", "render bug", "follow-up task"},
+        )
+
     def test_a_ref_lets_a_later_op_target_a_card_the_batch_just_created(self):
         result = self._bulk([
             {"op": "create", "ref": "parent", "title": "Parent", "column_id": self.open_id},
