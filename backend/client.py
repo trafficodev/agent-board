@@ -302,6 +302,11 @@ def list_cards(
     include: str | Sequence[str] | None = None,
     exclude: str | Sequence[str] | None = None,
 ) -> dict:
+    """List cards with exact include/exclude projection controls.
+
+    Omit both controls for all endpoint fields. Include selects exactly;
+    exclude alone removes from all; together, exclude removes from include.
+    """
     filters = {
         "column_id": column_id,
         "parent_id": parent_id,
@@ -329,6 +334,10 @@ def search_cards(
     include: str | Sequence[str] | None = None,
     exclude: str | Sequence[str] | None = None,
 ) -> dict:
+    """Search cards with exact include/exclude projection controls.
+
+    Omit both controls for all endpoint fields, including relation_roles.
+    """
     filters = {
         "query": query,
         "priority": priority,
@@ -355,11 +364,12 @@ def relevant_candidates(
     include: str | Sequence[str] | None = None,
     exclude: str | Sequence[str] | None = None,
 ) -> dict:
-    """Keyword-relevance shortlist (see `search_logic.relevant_candidates`):
-    a compact top-N candidate projection, not full cards. A building block
-    for semantic/AI ranking -- agent-board has no AI provider of its own,
-    so it is not itself a semantic search. Returns a compact exploration
-    envelope with relevance_score and column on each item."""
+    """Keyword-relevance shortlist with exact projection controls.
+
+    This is a building block for semantic/AI ranking, not semantic search.
+    Omit include/exclude for all endpoint fields, including relevance_score
+    and column; include selects exactly and exclude removes afterward.
+    """
     filters = {
         "query": query,
         "priority": priority,
@@ -378,7 +388,8 @@ def relevant_candidates(
 def _field_values(values: str | Sequence[str] | None) -> tuple[str, ...]:
     if values is None:
         return ()
-    return (values,) if isinstance(values, str) else tuple(values)
+    normalized = (values,) if isinstance(values, str) else tuple(values)
+    return normalized or ("",)
 
 
 def _exploration_query(

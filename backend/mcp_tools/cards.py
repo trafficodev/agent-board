@@ -2,6 +2,7 @@
 
 from mcp.types import Tool
 
+import card_projection
 import client
 from mcp_tools.context import CHANGE_CONTEXT_PROPERTIES, change_context_from_arguments
 
@@ -116,20 +117,24 @@ CARD_EXPLORATION_PROPERTIES = {
     **CARD_PAGE_PROPERTIES,
     "include": {
         "type": "array", "items": {"type": "string"},
-        "description": "Fields to add; '*' selects all.",
+        "description": card_projection.INCLUDE_FIELDS_DESCRIPTION,
     },
     "exclude": {
         "type": "array", "items": {"type": "string"},
-        "description": "Fields to remove after include; id remains.",
+        "description": card_projection.EXCLUDE_FIELDS_DESCRIPTION,
     },
 }
+
+EXACT_PROJECTION_TOOLS = frozenset({
+    "list_cards", "search_cards", "relevant_candidates",
+})
 
 TOOLS = [
     Tool(
         name="list_cards",
         description=(
-            "Discover cards in cursor-paginated envelopes. Defaults are compact; include fields or '*' "
-            "to expand, exclude fields to trim. Pass next_cursor back to continue."
+            "Discover cards in cursor-paginated envelopes. Returns all card and derived fields by "
+            "default; include/exclude select the exact projection. Pass next_cursor back to continue."
         ),
         inputSchema={
             "type": "object",
@@ -152,8 +157,9 @@ TOOLS = [
             "date-range, and numeric-comparison matching. Zero fuzziness: it finds only what "
             "literally appears (or a regex/range that literally matches), never a paraphrase or "
             "synonym. Returns matching cards plus their visible ancestors/descendants "
-            "in the card hierarchy. Returns a paginated envelope. Defaults are compact; include fields "
-            "or '*' to expand, exclude fields to trim. Every operator composes with every other: negation, "
+            "in the card hierarchy. Returns a paginated envelope with relation_roles. Returns all "
+            "available fields by default; include/exclude select the exact projection. Every operator "
+            "composes with every other: negation, "
             "field scoping, regex, grouping, and comparisons can all appear in the same query."
         ),
         inputSchema={
@@ -211,7 +217,8 @@ TOOLS = [
         name="relevant_candidates",
         description=(
             "Discover a bounded keyword-ranked card shortlist. Returns a paginated envelope with "
-            "relevance_score, column, and error. Use include/exclude to control fields."
+            "relevance_score, column, and error. Returns all available fields by default; "
+            "include/exclude select the exact projection."
         ),
         inputSchema={
             "type": "object",

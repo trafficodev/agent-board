@@ -389,9 +389,10 @@ def api_list_cards(
     sort: str = "board",
     limit: int = Query(card_projection.DEFAULT_PAGE_LIMIT, ge=1, le=card_projection.MAX_PAGE_LIMIT),
     cursor: str | None = None,
-    include: list[str] | None = Query(None),
-    exclude: list[str] | None = Query(None),
+    include: list[str] | None = Query(None, description=card_projection.INCLUDE_FIELDS_DESCRIPTION),
+    exclude: list[str] | None = Query(None, description=card_projection.EXCLUDE_FIELDS_DESCRIPTION),
 ):
+    """List cards. The default projection contains every card and derived field."""
     _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id, priority=priority, label=label, column_id=column_id, parent_id=parent_id)]
     coverage = card_projection.coverage_extras(
@@ -437,9 +438,10 @@ def api_search_cards(
     sort: str = "board",
     limit: int = Query(card_projection.DEFAULT_PAGE_LIMIT, ge=1, le=card_projection.MAX_PAGE_LIMIT),
     cursor: str | None = None,
-    include: list[str] | None = Query(None),
-    exclude: list[str] | None = Query(None),
+    include: list[str] | None = Query(None, description=card_projection.INCLUDE_FIELDS_DESCRIPTION),
+    exclude: list[str] | None = Query(None, description=card_projection.EXCLUDE_FIELDS_DESCRIPTION),
 ):
+    """Search cards with every card field, derived field, and relation_roles by default."""
     board = _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]
@@ -487,13 +489,14 @@ def api_relevant_candidates(
     max_candidates: int = Query(search_logic._SHORTLIST_CAP, ge=1, le=50),
     limit: int = Query(card_projection.DEFAULT_PAGE_LIMIT, ge=1, le=card_projection.MAX_PAGE_LIMIT),
     cursor: str | None = None,
-    include: list[str] | None = Query(None),
-    exclude: list[str] | None = Query(None),
+    include: list[str] | None = Query(None, description=card_projection.INCLUDE_FIELDS_DESCRIPTION),
+    exclude: list[str] | None = Query(None, description=card_projection.EXCLUDE_FIELDS_DESCRIPTION),
 ):
     """Keyword-relevance shortlist only -- a building block for semantic/AI
     ranking, not itself a semantic ranker (agent-board has no AI provider).
-    Callers who want AI ranking send this compact candidate list to a
-    model themselves."""
+    Callers who want AI ranking send this candidate list to a model themselves.
+    The default projection includes every card field, derived field,
+    relevance_score, and column."""
     board = _board_or_404(board_id)
     cards = [card.model_dump(mode="json") for card in cs.list_cards(board_id)]
     columns = [column.model_dump(mode="json") for column in board.columns]

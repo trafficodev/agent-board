@@ -31,15 +31,19 @@ ENDPOINT_EXTRAS = {
     "search_cards": ("relation_roles",),
     "relevant_candidates": ("relevance_score", "column"),
 }
-COMPACT_CARD_FIELDS = (
-    "id",
-    "title",
-    "column_id",
-    "parent_id",
-    "priority",
-    "labels",
-    "body_snippet",
-    "has_more_body",
+FIELD_PROJECTION_DESCRIPTION = (
+    "With neither include nor exclude, all endpoint fields are returned. "
+    "Include selects exactly those fields; exclude alone selects all fields except "
+    "those named; together, exclude removes fields from include. '*' means all "
+    "fields, id always remains, and unknown fields are rejected."
+)
+INCLUDE_FIELDS_DESCRIPTION = (
+    f"Fields to select. {FIELD_PROJECTION_DESCRIPTION} An explicit empty selection "
+    "returns only id."
+)
+EXCLUDE_FIELDS_DESCRIPTION = (
+    f"Fields to remove. {FIELD_PROJECTION_DESCRIPTION} An explicit empty selection "
+    "removes nothing."
 )
 
 
@@ -121,15 +125,17 @@ def resolve_card_fields(
     exclude: str | Sequence[str] | None = None,
 ) -> tuple[str, ...]:
     available = available_card_fields(endpoint)
-    endpoint_extras = ENDPOINT_EXTRAS[endpoint]
     available_set = set(available)
     included = _normalize_field_values(include)
     excluded = _normalize_field_values(exclude)
     _validate_fields(included, available_set)
     _validate_fields(excluded, available_set)
 
-    selected = set((*COMPACT_CARD_FIELDS, *endpoint_extras))
-    selected.update(available if "*" in included else included)
+    selected = (
+        set(available)
+        if include is None or "*" in included
+        else set(included)
+    )
     if "*" in excluded:
         selected.clear()
     else:
@@ -159,7 +165,7 @@ def project_card(
         values["relation_roles"] = list(relation_roles)
     for field, value in (extras or {}).items():
         values.setdefault(field, value)
-    return {field: values[field] for field in fields if field in values}
+    return {field: values.get(field) for field in fields}
 
 
 def page_cards(

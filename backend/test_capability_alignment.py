@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import cli
 import client
+import card_projection
+import main
 from mcp_tools import GROUPS
 from card_semantics import RelationshipType
 from models import ChangeContext
@@ -87,6 +89,16 @@ class CapabilityAlignmentTest(unittest.TestCase):
             self.assertEqual(properties["limit"]["maximum"], 100)
             self.assertEqual(properties["include"]["type"], "array")
             self.assertEqual(properties["exclude"]["type"], "array")
+            self.assertEqual(
+                properties["include"]["description"],
+                card_projection.INCLUDE_FIELDS_DESCRIPTION,
+            )
+            self.assertEqual(
+                properties["exclude"]["description"],
+                card_projection.EXCLUDE_FIELDS_DESCRIPTION,
+            )
+            self.assertIn("all", card_tools[tool_name].description.lower())
+            self.assertIn("exact", card_tools[tool_name].description.lower())
             self.assertNotIn("detail", properties)
 
         relevant_options = {
@@ -99,6 +111,25 @@ class CapabilityAlignmentTest(unittest.TestCase):
         self.assertTrue({"max_candidates", "limit", "cursor"}.issubset(relevant_properties))
         self.assertEqual(relevant_properties["max_candidates"]["default"], 40)
 
+        openapi = main.app.openapi()
+        for path in (
+            "/api/boards/{board_id}/cards",
+            "/api/boards/{board_id}/cards/search",
+            "/api/boards/{board_id}/cards/relevant-candidates",
+        ):
+            parameters = {
+                item["name"]: item
+                for item in openapi["paths"][path]["get"]["parameters"]
+            }
+            self.assertEqual(
+                parameters["include"]["description"],
+                card_projection.INCLUDE_FIELDS_DESCRIPTION,
+            )
+            self.assertEqual(
+                parameters["exclude"]["description"],
+                card_projection.EXCLUDE_FIELDS_DESCRIPTION,
+            )
+
     def test_client_forwards_projection_values_repeatably(self):
         with patch.object(client, "_req", return_value={}) as request:
             client.list_cards("board")
@@ -110,6 +141,7 @@ class CapabilityAlignmentTest(unittest.TestCase):
                 include=["body,metadata", "notes"],
                 exclude="labels",
             )
+            client.relevant_candidates("board", "bug", include=[], exclude=[])
 
         self.assertEqual(
             request.call_args_list[0].args,
@@ -120,6 +152,13 @@ class CapabilityAlignmentTest(unittest.TestCase):
             (
                 "GET",
                 "/api/boards/board/cards/search?query=bug&limit=25&cursor=next+page&include=body%2Cmetadata&include=notes&exclude=labels",
+            ),
+        )
+        self.assertEqual(
+            request.call_args_list[2].args,
+            (
+                "GET",
+                "/api/boards/board/cards/relevant-candidates?query=bug&max_candidates=40&limit=50&include=&exclude=",
             ),
         )
 

@@ -50,6 +50,23 @@ def _max_concurrency() -> int:
     return value
 
 
+def _exact_projection_value(result: object) -> object:
+    if not isinstance(result, dict):
+        return sparse_value(result)
+    return {
+        key: [
+            {
+                field: sparse_value(value)
+                for field, value in item.items()
+            }
+            for item in value
+        ]
+        if key == "items" and isinstance(value, list)
+        else sparse_value(value)
+        for key, value in result.items()
+    }
+
+
 class ToolDispatchOwner:
     def __init__(self, *, max_concurrency: int | None = None) -> None:
         self._owners = _tool_owners()
@@ -79,6 +96,8 @@ class ToolDispatchOwner:
                 name,
                 arguments,
             )
+            if name in getattr(group, "EXACT_PROJECTION_TOOLS", ()):
+                return _exact_projection_value(result)
             return sparse_value(result)
         finally:
             self._active.discard(task)

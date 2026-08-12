@@ -67,31 +67,62 @@ class CardProjectionApiTest(unittest.TestCase):
             ),
         )
 
-    def test_list_defaults_to_compact_envelope_and_include_star_expands(self):
-        card = self.create_card(
-            "Compact", body="x" * 300, priority="high", labels=["api"]
+    def test_resolver_distinguishes_every_projection_control_case(self):
+        cases = (
+            (None, None, lambda available: available),
+            (["title", "body"], None, lambda _available: ("id", "title", "body")),
+            (None, ["body", "metadata"], lambda available: tuple(
+                field for field in available if field not in {"body", "metadata"}
+            )),
+            (["title", "body", "metadata"], ["body"], lambda _available: (
+                "id", "title", "metadata"
+            )),
         )
 
-        compact = self.client.get(self.path).json()
+        for endpoint in card_projection.ENDPOINT_EXTRAS:
+            available = card_projection.available_card_fields(endpoint)
+            for include, exclude, expected in cases:
+                with self.subTest(endpoint=endpoint, include=include, exclude=exclude):
+                    self.assertEqual(
+                        card_projection.resolve_card_fields(
+                            endpoint, include=include, exclude=exclude
+                        ),
+                        expected(available),
+                    )
 
-        self.assertEqual(set(compact), {"items", "next_cursor", "has_more"})
-        self.assertEqual(
-            set(compact["items"][0]),
-            {
-                "id", "title", "column_id", "parent_id", "priority", "labels",
-                "body_snippet", "has_more_body",
-            },
+    def test_rest_projection_matrix_is_exact_on_every_discovery_endpoint(self):
+        self.create_card("Needle", body="", labels=[])
+        endpoint_cases = (
+            ("list_cards", self.path, {}),
+            ("search_cards", f"{self.path}/search", {"query": "Needle"}),
+            (
+                "relevant_candidates",
+                f"{self.path}/relevant-candidates",
+                {"query": "Needle"},
+            ),
         )
-        self.assertTrue(compact["items"][0]["has_more_body"])
-        self.assertNotIn("body", compact["items"][0])
+        selectors = (
+            ({}, lambda available: available),
+            ({"include": "title,body"}, lambda _available: ("id", "title", "body")),
+            ({"exclude": "body,metadata"}, lambda available: tuple(
+                field for field in available if field not in {"body", "metadata"}
+            )),
+            (
+                {"include": "title,body,metadata", "exclude": "body"},
+                lambda _available: ("id", "title", "metadata"),
+            ),
+        )
 
-        full = self.client.get(self.path, params={"include": "*"}).json()
-        self.assertEqual(full["items"][0]["id"], card.id)
-        self.assertEqual(full["items"][0]["body"], "x" * 300)
-        self.assertIn("metadata", full["items"][0])
-
-        fetched = self.client.get(f"{self.path}/{card.id}").json()
-        self.assertEqual(fetched["body"], "x" * 300)
+        for endpoint, path, base_params in endpoint_cases:
+            available = card_projection.available_card_fields(endpoint)
+            for selector, expected in selectors:
+                with self.subTest(endpoint=endpoint, selector=selector):
+                    response = self.client.get(path, params={**base_params, **selector})
+                    self.assertEqual(response.status_code, 200)
+                    item = response.json()["items"][0]
+                    self.assertEqual(set(item), set(expected(available)))
+                    if "coverage" in item:
+                        self.assertIsNone(item["coverage"])
 
     def test_projection_fields_are_model_derived_and_endpoint_scoped(self):
         self.assertEqual(
@@ -138,6 +169,14 @@ class CardProjectionApiTest(unittest.TestCase):
         )
         self.assertIn(
             "id", card_projection.resolve_card_fields("list_cards", exclude="id")
+        )
+        self.assertEqual(
+            card_projection.resolve_card_fields("list_cards", include=[]),
+            ("id",),
+        )
+        self.assertEqual(
+            card_projection.resolve_card_fields("list_cards", exclude=[]),
+            card_projection.available_card_fields("list_cards"),
         )
 
     def test_coverage_is_derived_for_requirements_and_catalog_rollups(self):
@@ -243,30 +282,24 @@ class CardProjectionApiTest(unittest.TestCase):
         }
         first = card_projection.page_cards(
             **arguments,
-            selected_fields=card_projection.resolve_card_fields(
-                "list_cards", include=["metadata, body", "body"]
-            ),
+            selected_fields=card_projection.resolve_card_fields("list_cards"),
         )
         arguments["cursor"] = first["next_cursor"]
 
         resumed = card_projection.page_cards(
             **arguments,
-            selected_fields=card_projection.resolve_card_fields(
-                "list_cards", include=[" body ", "metadata"]
-            ),
+            selected_fields=card_projection.resolve_card_fields("list_cards", include="*"),
         )
         self.assertEqual(len(resumed["items"]), 1)
         self.assertEqual(
             set(resumed["items"][0]),
-            set(card_projection.resolve_card_fields(
-                "list_cards", include=["body", "metadata"]
-            )),
+            set(card_projection.available_card_fields("list_cards")),
         )
         with self.assertRaises(card_projection.InvalidCursor):
             card_projection.page_cards(
                 **arguments,
                 selected_fields=card_projection.resolve_card_fields(
-                    "list_cards", include=["metadata", "created_at"]
+                    "list_cards", include=["metadata", "body"]
                 ),
             )
 
@@ -384,11 +417,7 @@ class CardProjectionApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         item = response.json()["items"][0]
-        self.assertIn("body", item)
-        self.assertIn("metadata", item)
-        self.assertIn("created_at", item)
-        self.assertNotIn("labels", item)
-        self.assertNotIn("body_snippet", item)
+        self.assertEqual(set(item), {"id", "body", "metadata", "created_at"})
 
     def test_rest_rejects_endpoint_extras_from_other_discovery_apis(self):
         self.create_card("Projected")
@@ -405,6 +434,14 @@ class CardProjectionApiTest(unittest.TestCase):
                     response.json()["detail"], f"invalid_card_fields:{field}"
                 )
 
+        for control in ("include", "exclude"):
+            with self.subTest(control=control):
+                response = self.client.get(self.path, params={control: "unknown"})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json()["detail"], "invalid_card_fields:unknown"
+                )
+
     def test_rest_exclude_star_returns_id_only_on_every_discovery_endpoint(self):
         card = self.create_card("Needle")
 
@@ -419,6 +456,13 @@ class CardProjectionApiTest(unittest.TestCase):
             with self.subTest(endpoint=endpoint):
                 result = self.client.get(endpoint, params=params).json()
                 self.assertEqual(result["items"], [{"id": card.id}])
+
+    def test_rest_explicit_empty_include_returns_id_only(self):
+        card = self.create_card("Needle")
+
+        response = self.client.get(self.path, params={"include": ""})
+
+        self.assertEqual(response.json()["items"], [{"id": card.id}])
 
     def test_rest_can_exclude_computed_fields_without_changing_envelope(self):
         self.create_card("Needle")

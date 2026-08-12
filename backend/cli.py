@@ -2,6 +2,7 @@ import argparse
 import json
 from typing import get_args
 
+import card_projection
 import client
 from card_semantics import RelationshipType
 
@@ -31,11 +32,11 @@ def _add_card_exploration_args(command: argparse.ArgumentParser) -> None:
     _add_card_page_args(command)
     command.add_argument(
         "--include", action="append",
-        help="Add fields; repeat or comma-separate. Use * for all.",
+        help=card_projection.INCLUDE_FIELDS_DESCRIPTION,
     )
     command.add_argument(
         "--exclude", action="append",
-        help="Remove fields; repeat or comma-separate. id always remains.",
+        help=card_projection.EXCLUDE_FIELDS_DESCRIPTION,
     )
 
 
