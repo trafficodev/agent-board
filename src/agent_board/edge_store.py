@@ -6,6 +6,43 @@ from .models import CreateEdge, Edge, Event
 from .board_store import get_board
 
 
+class EdgeError(Exception):
+    """A ``create_edge`` precondition failed.
+
+    ``str(self)`` is a caller-facing reason. Each subclass names one distinct
+    way the request is refused so callers can map it to an accurate status
+    instead of collapsing every rejection into "invalid id".
+    """
+
+
+class UnknownEndpoint(EdgeError):
+    """The board, or one of the two cards, does not exist."""
+
+
+class SelfLoop(EdgeError):
+    """The from- and to-card are the same card."""
+
+
+class DuplicateEdge(EdgeError):
+    """An edge of this type already connects these two cards."""
+
+
+class MissingSemanticKind(EdgeError):
+    """One or both endpoints lack the semantic kind a link needs."""
+
+
+class InvalidDirection(EdgeError):
+    """This edge type is not allowed between these two kinds/direction."""
+
+
+class ParentRelationshipRequired(EdgeError):
+    """A ``defines``/``parent_of`` edge must follow the card parentage."""
+
+
+class DependencyCycle(EdgeError):
+    """A ``depends_on`` edge would close a cycle in the dependency graph."""
+
+
 def direction_is_valid(edge_type: str, source, target) -> bool:
     source_kind = source.semantics.kind
     target_kind = target.semantics.kind
@@ -129,10 +166,16 @@ def get_edge(board_id: str, edge_id: str) -> Edge | None:
     return db.edge_from_row(row) if row else None
 
 
-def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
+def create_edge(board_id: str, data: CreateEdge) -> Edge:
+    """Create one edge, or raise an :class:`EdgeError` naming why it can't.
+
+    Every refusal is a distinct subclass so a caller can report an accurate
+    status and message rather than the historical catch-all that told callers
+    with perfectly valid ids that their ids were invalid.
+    """
     with db.transaction() as conn:
         if not get_board(board_id):
-            return None
+            raise UnknownEndpoint(f"unknown board '{board_id}'")
         # Both endpoints must be real cards, or the graph grows references to
         # nothing and the dependency order walks off the board.
         found = {
@@ -141,16 +184,24 @@ def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
                 (board_id, data.from_card_id, data.to_card_id),
             )
         }
-        if data.from_card_id not in found or data.to_card_id not in found:
-            return None
+        missing = [
+            cid for cid in (data.from_card_id, data.to_card_id) if cid not in found
+        ]
+        if missing:
+            raise UnknownEndpoint(
+                "unknown card id" + ("s" if len(missing) > 1 else "")
+                + ": " + ", ".join(missing)
+            )
         if data.from_card_id == data.to_card_id:
-            return None
+            raise SelfLoop("a card cannot link to itself")
         if conn.execute(
             "SELECT 1 FROM edges WHERE board_id=? AND from_card_id=?"
             " AND to_card_id=? AND type=?",
             (board_id, data.from_card_id, data.to_card_id, data.type),
         ).fetchone():
-            return None
+            raise DuplicateEdge(
+                f"a '{data.type}' edge between these cards already exists"
+            )
         cards = {
             card.id: card
             for card in db.hydrate_cards(
@@ -161,21 +212,29 @@ def create_edge(board_id: str, data: CreateEdge) -> Edge | None:
                 ).fetchall(),
             )
         }
-        if not direction_is_valid(
-            data.type,
-            cards[data.from_card_id],
-            cards[data.to_card_id],
-        ):
-            return None
-        if data.type in {"defines", "parent_of"} and cards[data.to_card_id].parent_id != data.from_card_id:
-            return None
+        source = cards[data.from_card_id]
+        target = cards[data.to_card_id]
+        if not (source.semantics.kind and target.semantics.kind):
+            raise MissingSemanticKind(
+                "both cards must have a semantic kind before linking"
+            )
+        if not direction_is_valid(data.type, source, target):
+            raise InvalidDirection(
+                f"edge type '{data.type}' is not valid from kind "
+                f"'{source.semantics.kind}' to kind '{target.semantics.kind}'"
+            )
+        if data.type in {"defines", "parent_of"} and target.parent_id != data.from_card_id:
+            raise ParentRelationshipRequired(
+                f"edge type '{data.type}' requires the target card's parent "
+                "to be the source card"
+            )
         if data.type == "depends_on" and _would_cycle_dependency(
             conn,
             board_id,
             data.from_card_id,
             data.to_card_id,
         ):
-            return None
+            raise DependencyCycle("this edge would create a dependency cycle")
         edge = Edge(
             board_id=board_id, from_card_id=data.from_card_id, to_card_id=data.to_card_id,
             type=data.type, label=data.label,

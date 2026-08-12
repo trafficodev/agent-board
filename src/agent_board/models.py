@@ -183,6 +183,15 @@ class ChangeContext(BaseModel):
     @classmethod
     def from_headers(cls, headers: Mapping[str, str]) -> ChangeContext:
         normalized = {key.lower(): value for key, value in headers.items()}
+        if not normalized.get(CHANGE_PROVIDER_HEADER.lower(), "").strip():
+            # Name the header the caller has to set. The generic validator
+            # message ("provider must be a lowercase provider namespace") is
+            # opaque to a REST caller who simply never sent the header.
+            raise ValueError(
+                f"missing required header {CHANGE_PROVIDER_HEADER}: it must be a "
+                "lowercase provider namespace identifying the authoring agent "
+                "(for example 'claude', 'codex', or 'gemini')"
+            )
         return cls.authored(
             normalized.get(CHANGE_PROVIDER_HEADER.lower(), ""),
             normalized.get(CHANGE_NATIVE_SESSION_HEADER.lower(), ""),

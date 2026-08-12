@@ -65,7 +65,8 @@ class DagOrderTest(unittest.TestCase):
     def test_cycle_is_rejected_without_losing_cards(self):
         board, column_id, (a, b) = _backlog_board("A", "B")
         self.assertIsNotNone(_block(board.id, blocker=a, blocked=b))
-        self.assertIsNone(_block(board.id, blocker=b, blocked=a))
+        with self.assertRaises(edge_store.DependencyCycle):
+            _block(board.id, blocker=b, blocked=a)
         self.assertEqual(sorted(_titles(board.id, column_id)), ["A", "B"])
 
     def test_non_blocking_edge_types_do_not_reorder(self):

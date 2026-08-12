@@ -36,10 +36,20 @@ class EdgeStoreTest(unittest.TestCase):
 
     def test_create_edge_rejects_unknown_card(self):
         board, a, _ = _board_with_two_cards()
-        edge = edge_store.create_edge(
-            board.id, CreateEdge(from_card_id=a.id, to_card_id="doesnotexist", type="depends_on"),
-        )
-        self.assertIsNone(edge)
+        with self.assertRaises(edge_store.UnknownEndpoint) as caught:
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(from_card_id=a.id, to_card_id="doesnotexist", type="depends_on"),
+            )
+        self.assertIn("doesnotexist", str(caught.exception))
+
+    def test_create_edge_rejects_unknown_board(self):
+        board, a, b = _board_with_two_cards()
+        with self.assertRaises(edge_store.UnknownEndpoint):
+            edge_store.create_edge(
+                "nosuchboard",
+                CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on"),
+            )
 
     def test_list_edges_filters_by_card_and_type(self):
         board, a, b = _board_with_two_cards()
@@ -75,22 +85,25 @@ class EdgeStoreTest(unittest.TestCase):
 
     def test_rejects_duplicate_self_and_dependency_cycle(self):
         board, a, b = _board_with_two_cards()
-        self.assertIsNone(edge_store.create_edge(
-            board.id,
-            CreateEdge(from_card_id=a.id, to_card_id=a.id, type="depends_on"),
-        ))
+        with self.assertRaises(edge_store.SelfLoop):
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(from_card_id=a.id, to_card_id=a.id, type="depends_on"),
+            )
         self.assertIsNotNone(edge_store.create_edge(
             board.id,
             CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on"),
         ))
-        self.assertIsNone(edge_store.create_edge(
-            board.id,
-            CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on"),
-        ))
-        self.assertIsNone(edge_store.create_edge(
-            board.id,
-            CreateEdge(from_card_id=b.id, to_card_id=a.id, type="depends_on"),
-        ))
+        with self.assertRaises(edge_store.DuplicateEdge):
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(from_card_id=a.id, to_card_id=b.id, type="depends_on"),
+            )
+        with self.assertRaises(edge_store.DependencyCycle):
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(from_card_id=b.id, to_card_id=a.id, type="depends_on"),
+            )
 
     def test_enforces_direction_when_card_kinds_are_known(self):
         board, delivery, _ = _board_with_two_cards()
@@ -138,23 +151,30 @@ class EdgeStoreTest(unittest.TestCase):
                 type="implements",
             ),
         ))
-        self.assertIsNone(edge_store.create_edge(
-            board.id,
-            CreateEdge(
-                from_card_id=requirement.id,
-                to_card_id=delivery.id,
-                type="implements",
-            ),
-        ))
+        with self.assertRaises(edge_store.InvalidDirection) as caught:
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(
+                    from_card_id=requirement.id,
+                    to_card_id=delivery.id,
+                    type="implements",
+                ),
+            )
+        # The message names the edge type and both kinds, not "invalid id".
+        message = str(caught.exception)
+        self.assertIn("implements", message)
+        self.assertIn("requirement", message)
+        self.assertIn("task", message)
 
     def test_rejects_controlled_relationships_between_untyped_cards(self):
         board = board_store.create_board("Untyped", "", ["Open"])
         first = card_store.create_card(board.id, CreateCard(title="A", column_id=board.columns[0].id))
         second = card_store.create_card(board.id, CreateCard(title="B", column_id=board.columns[0].id))
-        self.assertIsNone(edge_store.create_edge(
-            board.id,
-            CreateEdge(from_card_id=first.id, to_card_id=second.id, type="depends_on"),
-        ))
+        with self.assertRaises(edge_store.MissingSemanticKind):
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(from_card_id=first.id, to_card_id=second.id, type="depends_on"),
+            )
 
     def test_defines_requires_the_same_parent_relationship(self):
         board = board_store.create_board("Catalog", "", ["Open"])
@@ -171,10 +191,11 @@ class EdgeStoreTest(unittest.TestCase):
             parent_id=area.id,
             semantics=CardSemantics(kind="feature", catalog_lifecycle="active"),
         ))
-        self.assertIsNone(edge_store.create_edge(
-            board.id,
-            CreateEdge(from_card_id=other_area.id, to_card_id=feature.id, type="defines"),
-        ))
+        with self.assertRaises(edge_store.ParentRelationshipRequired):
+            edge_store.create_edge(
+                board.id,
+                CreateEdge(from_card_id=other_area.id, to_card_id=feature.id, type="defines"),
+            )
 
     def test_kind_change_cannot_invalidate_an_incident_relationship(self):
         board, delivery, _ = _board_with_two_cards()

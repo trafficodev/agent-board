@@ -259,11 +259,15 @@ class BoardConsolidationTest(unittest.TestCase):
             return original(source, target)
 
         def write_source_edge():
-            writer_result.append(edge_store.create_edge(
-                self.source.id,
-                CreateEdge(from_card_id=first.id, to_card_id=second.id, type="depends_on"),
-            ))
-            writer_done.set()
+            try:
+                writer_result.append(edge_store.create_edge(
+                    self.source.id,
+                    CreateEdge(from_card_id=first.id, to_card_id=second.id, type="depends_on"),
+                ))
+            except edge_store.EdgeError as exc:
+                writer_result.append(exc)
+            finally:
+                writer_done.set()
 
         with patch.object(board_consolidation, "_build_manifest", side_effect=pause_build):
             consolidation = threading.Thread(
@@ -280,7 +284,10 @@ class BoardConsolidationTest(unittest.TestCase):
             writer.join(timeout=5)
 
         self.assertTrue(writer_done.is_set())
-        self.assertEqual(writer_result, [None])
+        # The source board is consolidated away before the write runs, so the
+        # edge write is refused for a missing endpoint rather than persisted.
+        self.assertEqual(len(writer_result), 1)
+        self.assertIsInstance(writer_result[0], edge_store.UnknownEndpoint)
         self.assertEqual(edge_store.list_edges(self.source.id), [])
 
     def test_identical_card_id_is_deduplicated(self):

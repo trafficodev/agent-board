@@ -812,9 +812,21 @@ def api_list_edges(board_id: str, card_id: str | None = None, type: str | None =
 @app.post("/api/boards/{board_id}/edges", status_code=201)
 def api_create_edge(board_id: str, body: CreateEdge):
     _board_or_404(board_id)
-    edge = es.create_edge(board_id, body)
-    if not edge:
-        raise HTTPException(400, "Invalid board or card id")
+    try:
+        edge = es.create_edge(board_id, body)
+    except es.UnknownEndpoint as exc:
+        raise HTTPException(404, str(exc))
+    except es.DuplicateEdge as exc:
+        raise HTTPException(409, str(exc))
+    except es.DependencyCycle as exc:
+        raise HTTPException(409, str(exc))
+    except (
+        es.SelfLoop,
+        es.MissingSemanticKind,
+        es.InvalidDirection,
+        es.ParentRelationshipRequired,
+    ) as exc:
+        raise HTTPException(422, str(exc))
     _sync_board_if_enabled(board_id)
     return edge
 
