@@ -5,9 +5,9 @@ from datetime import datetime, timezone, timedelta
 
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-test-")
 
-import board_store
-import card_store
-from models import CreateCard, MoveCard
+from agent_board import board_store
+from agent_board import card_store
+from agent_board.models import CreateCard, MoveCard
 
 
 class ClosedCardPruningTest(unittest.TestCase):

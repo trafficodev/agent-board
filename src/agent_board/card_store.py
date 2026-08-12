@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from models import (
+from .models import (
     AddSession,
     Card,
     Event,
@@ -14,9 +14,9 @@ from models import (
     UpdateCard,
     _now,
 )
-from paths import board_path, events_path
+from .paths import board_path, events_path
 
-from board_store import get_board
+from .board_store import get_board
 
 CLOSED_CARD_TTL = timedelta(days=3)
 CLOSED_AT_METADATA_KEY = "closed_at"
@@ -144,7 +144,7 @@ def get_card(board_id: str, card_id: str) -> Card | None:
 
 
 def create_card(board_id: str, data: "CreateCard") -> Card | None:
-    from models import CreateCard
+    from .models import CreateCard
     board = get_board(board_id)
     if not board:
         return None
@@ -179,7 +179,7 @@ def create_card(board_id: str, data: "CreateCard") -> Card | None:
 
 
 def update_card(board_id: str, card_id: str, data: "UpdateCard") -> Card | None:
-    from models import UpdateCard
+    from .models import UpdateCard
     cards = _read_cards(board_id)
     card = next((c for c in cards if c.id == card_id), None)
     if not card:

@@ -9,9 +9,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-import board_store as bs
-import card_store as cs
-from paths import home
+from . import board_store as bs
+from . import card_store as cs
+from .paths import home
 
 
 DEFAULT_CANVAS_API_URL = "http://localhost:8002/api"

@@ -5,23 +5,22 @@ manage cards and sessions without knowing the HTTP API.
 
 Auto-starts the board backend on first use (via client.py).
 
-Usage in Claude Code settings.json:
+Install the package (uv tool install / pipx install / pip install), then
+register the `agent-board-mcp` console command with your host, e.g. Claude
+Code settings.json:
   "mcpServers": {
-    "agent-board": {
-      "command": "python",
-      "args": ["<agent-board-repo>/backend/mcp_server.py"]
-    }
+    "agent-board": {"command": "agent-board-mcp"}
   }
+`agent-board-install` does this for you across hosts.
 """
 
 import json
-import sys
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-import client
+from . import client
 
 app = Server("agent-board")
 
@@ -401,6 +400,11 @@ async def main():
         await app.run(read, write, app.create_initialization_options())
 
 
-if __name__ == "__main__":
+def run():
+    """Synchronous entry point (console script: agent-board-mcp)."""
     import asyncio
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()

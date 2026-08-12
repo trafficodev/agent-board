@@ -5,7 +5,6 @@ Any MCP tool or CLI should import from here instead of calling the API directly.
 """
 
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -13,13 +12,8 @@ import urllib.error
 import urllib.request
 import json
 import urllib.parse
-from pathlib import Path
 
 BASE_URL = os.environ.get("AGENT_BOARD_URL", "http://localhost:8001")
-_API_PATH = Path(__file__).resolve().parent
-_PROJECT_ROOT = _API_PATH.parent
-_BACKEND_DIR = _API_PATH
-_VENV_PYTHON = _BACKEND_DIR / ".venv" / "bin" / "python"
 _PORT = int(BASE_URL.rsplit(":", 1)[-1].rstrip("/"))
 
 _process: subprocess.Popen | None = None
@@ -38,10 +32,9 @@ def _start_server() -> None:
     if _is_running():
         return
 
-    python = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
     _process = subprocess.Popen(
-        [python, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", f"--port={_PORT}"],
-        cwd=str(_BACKEND_DIR),
+        [sys.executable, "-m", "uvicorn", "agent_board.main:app",
+         "--host", "127.0.0.1", f"--port={_PORT}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

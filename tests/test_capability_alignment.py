@@ -1,9 +1,9 @@
 import inspect
 import unittest
 
-import cli
-import client
-import mcp_server
+from agent_board import cli
+from agent_board import client
+from agent_board import mcp_server
 
 
 UI_CAPABILITIES = {

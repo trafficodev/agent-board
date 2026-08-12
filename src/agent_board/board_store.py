@@ -4,8 +4,8 @@ import fcntl
 import json
 from pathlib import Path
 
-from models import Board, Column, Event, _now, _uid
-from paths import board_path, boards_dir, events_path
+from .models import Board, Column, Event, _now, _uid
+from .paths import board_path, boards_dir, events_path
 
 
 def _read_json(path: Path) -> dict | None:
@@ -169,7 +169,7 @@ def delete_column(board_id: str, column_id: str) -> bool:
         _save_board(board)
         _append_event(board_id, Event(type="column_removed", detail=column_id))
         # Delete orphaned cards that belonged to this column
-        from card_store import _read_cards, _write_cards
+        from .card_store import _read_cards, _write_cards
         cards = _read_cards(board_id)
         cards = [c for c in cards if c.column_id != column_id]
         _write_cards(board_id, cards)

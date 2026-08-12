@@ -4,9 +4,9 @@ import unittest
 
 os.environ["AGENT_BOARD_HOME"] = tempfile.mkdtemp(prefix="agent-board-test-")
 
-import board_store
-import card_store
-from models import CreateCard, UpdateCard
+from agent_board import board_store
+from agent_board import card_store
+from agent_board.models import CreateCard, UpdateCard
 
 
 class CardMetadataTest(unittest.TestCase):

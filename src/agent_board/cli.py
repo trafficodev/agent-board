@@ -1,7 +1,7 @@
 import argparse
 import json
 
-import client
+from . import client
 
 
 def _json_arg(value: str):

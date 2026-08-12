@@ -4,11 +4,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-import board_store as bs
-import canvas_sync
-import card_store as cs
-import search_logic
-from models import (
+from . import board_store as bs
+from . import canvas_sync
+from . import card_store as cs
+from . import search_logic
+from .models import (
     AddSession,
     CreateBoard,
     CreateCard,

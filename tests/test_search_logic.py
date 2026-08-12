@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from search_logic import parse_search_query, search_cards
+from agent_board.search_logic import parse_search_query, search_cards
 
 
 COLUMNS = [

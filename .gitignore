@@ -6,3 +6,6 @@ dist/
 .agent-board/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+*.egg-info/
+build/
+.pytest_cache/

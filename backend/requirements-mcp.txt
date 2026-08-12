@@ -1,6 +1,0 @@
-# Extra dependency needed only for the MCP server (backend/mcp_server.py).
-# The HTTP backend itself only needs requirements.txt.
-#
-# mcp_server.py uses the 1.x low-level Server API (@app.list_tools() /
-# @app.call_tool()), which the 2.0 major release removed. Pin to 1.x.
-mcp>=1.0,<2

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-board"
+version = "0.1.0"
+description = "A kanban board for AI agents, with an MCP server and a CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "ofekron" }]
+keywords = ["mcp", "agents", "kanban", "claude", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "mcp>=1.0,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/ofekron/agent-board"
+Repository = "https://github.com/ofekron/agent-board"
+
+[project.scripts]
+agent-board = "agent_board.cli:main"
+agent-board-mcp = "agent_board.mcp_server:run"
+agent-board-install = "agent_board.install:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_board"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
