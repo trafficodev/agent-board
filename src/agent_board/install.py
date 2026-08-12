@@ -86,6 +86,34 @@ def mcp_command() -> str:
     return shutil.which(MCP_COMMAND) or MCP_COMMAND
 
 
+def _warn_stale_cli_wrapper() -> None:
+    """Warn if a stale, hard-coded `agent-board` wrapper shadows PATH.
+
+    Earlier installers generated a wrapper that exec'd a hard-coded
+    `.../backend/cli.py`. The CLI now lives at `agent_board/cli.py` and ships as
+    a console entry point, so that old wrapper points at a file that no longer
+    exists and every `agent-board <cmd>` fails. Package managers usually replace
+    it on upgrade, but one left earlier on PATH would still win. Detect it and
+    print the fix; never touch a file a package manager may own.
+    """
+    found = shutil.which("agent-board")
+    if not found:
+        return
+    try:
+        text = Path(found).read_text(errors="ignore")
+    except OSError:
+        return
+    # A working install is a console script that imports the package; the stale
+    # wrapper hard-codes the pre-repackage cli.py path instead.
+    if "agent_board" in text or "backend/cli.py" not in text:
+        return
+    print(f"! The 'agent-board' command on your PATH is a stale wrapper: {found}")
+    print("  It points at the pre-packaging backend/cli.py path, which no longer exists.")
+    print("  Replace it by reinstalling the package, e.g.:")
+    print("    uv tool install --force .   (or: pipx install --force . / pip install --force-reinstall .)")
+    print(f"  or just delete {found} and reinstall.\n")
+
+
 def server_spec(cmd: str) -> dict:
     return {"command": cmd}
 
@@ -188,6 +216,9 @@ def main() -> int:
             kind = "cli " if p in CLI_HOSTS else "json"
             print(f"  {'[detected]' if detected(p) else '[   -    ]'} ({kind}) {p}")
         return 0
+
+    if args.action == "install":
+        _warn_stale_cli_wrapper()
 
     cmd = mcp_command()
     if args.action == "install" and shutil.which(MCP_COMMAND) is None:

@@ -42,3 +42,6 @@ packages = ["src/agent_board"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: end-to-end tests that build/install the package (deselect with '-m \"not slow\"').",
+]
