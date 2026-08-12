@@ -250,18 +250,37 @@ def db_path() -> Path:
 _local = threading.local()
 
 
+class _ConnectionOwner:
+    def __init__(self, conn: sqlite3.Connection, path: Path):
+        self.conn = conn
+        self.path = path
+        self.closed = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.conn.close()
+        self.closed = True
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 def connect() -> sqlite3.Connection:
     """This thread's connection, opened and initialized on first use.
 
     One connection per thread rather than one per process: sqlite3 objects are
     not shareable across threads, and the server answers requests on many.
     """
-    existing = getattr(_local, "conn", None)
+    owner = getattr(_local, "owner", None)
     path = db_path()
-    if existing is not None and getattr(_local, "path", None) == path:
-        return existing
-    if existing is not None:
-        existing.close()  # AGENT_BOARD_HOME moved (tests do this)
+    if owner is not None and owner.path == path:
+        return owner.conn
+    if owner is not None:
+        owner.close()  # AGENT_BOARD_HOME moved (tests do this)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=30.0, isolation_level=None)
@@ -289,8 +308,7 @@ def connect() -> sqlite3.Connection:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique"
         " ON edges(board_id, from_card_id, to_card_id, type)"
     )
-    _local.conn = conn
-    _local.path = path
+    _local.owner = _ConnectionOwner(conn, path)
     _local.depth = 0
     return conn
 
@@ -381,11 +399,10 @@ def _migrate_schema_2_to_3(conn: sqlite3.Connection) -> None:
 
 
 def close() -> None:
-    conn = getattr(_local, "conn", None)
-    if conn is not None:
-        conn.close()
-        _local.conn = None
-        _local.path = None
+    owner = getattr(_local, "owner", None)
+    if owner is not None:
+        owner.close()
+        _local.owner = None
         _local.depth = 0
 
 
