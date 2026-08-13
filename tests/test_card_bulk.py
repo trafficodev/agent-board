@@ -241,6 +241,46 @@ class BulkCardsTest(unittest.TestCase):
         )
         self.assertIsNone(card_store.get_card(self.board.id, parent.id).parent_id)
 
+    def test_semantic_kind_update_succeeds_without_a_remote_or_edges(self):
+        # The board has no linked remote and no edges: setting kind=test /
+        # kind=decision must still apply. The kind carries no implied edge, so
+        # it is not gated on remote state.
+        card = self._card("subject")
+        result = self._bulk([
+            {"op": "update", "card_id": card.id,
+             "semantics": {"kind": "test", "acceptance_criteria": ["x"]}},
+        ])
+        self.assertTrue(result.applied, result.error)
+        self.assertEqual(
+            card_store.get_card(self.board.id, card.id).semantics.kind, "test"
+        )
+
+    def test_a_constraint_failure_names_the_field_cause_and_op_index(self):
+        area = card_store.create_card(
+            self.board.id,
+            CreateCard(
+                title="Area", column_id=self.open_id,
+                semantics=CardSemantics(kind="product_area", catalog_lifecycle="active"),
+            ),
+        )
+        child = card_store.create_card(
+            self.board.id,
+            CreateCard(title="Child", column_id=self.open_id, parent_id=area.id),
+        )
+        # op 0 is fine; op 1 is a real semantic-hierarchy violation.
+        result = self._bulk([
+            {"op": "update", "card_id": child.id, "labels": ["ok"]},
+            {"op": "update", "card_id": child.id,
+             "semantics": {"kind": "product_area", "catalog_lifecycle": "active"}},
+        ])
+        self.assertFalse(result.applied)
+        self.assertEqual(result.failed_index, 1)
+        self.assertIn("op 1", result.error)
+        self.assertIn("semantics.kind", result.error)
+        self.assertIn("semantic hierarchy", result.error)
+        # No longer the OR-of-three catch-all.
+        self.assertNotIn("edge conflict", result.error)
+
     def test_an_update_to_an_unknown_column_is_refused_not_ignored(self):
         """Silently keeping the old lane would report a move that never happened."""
         card = self._card("stays")

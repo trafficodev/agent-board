@@ -165,14 +165,67 @@ def valid_semantic_parent(
     semantics: CardSemantics,
     parent_semantics: CardSemantics | None,
 ) -> bool:
+    """Whether ``semantics`` may sit under ``parent_semantics``.
+
+    Two rules, and only two:
+
+    * A catalog kind (``product_area``/``feature``/``requirement``) has one
+      exact parent kind, so its place in the catalog tree is fixed.
+    * Every other kind -- the delivery kinds, and a card with no kind at all --
+      is refused only under a *catalog* parent. An absent parent, an untyped
+      (kind-less) parent, or a delivery-kind parent are all fine.
+
+    That second rule is deliberately permissive about untyped parents: a
+    grouping card that carries no semantic kind is a container, not a catalog
+    node, so giving one of its children a ``kind`` must not depend on the
+    parent first being typed. This is decoupled from edges and from any linked
+    remote -- setting a ``kind`` never implies an edge and is never gated on
+    remote state.
+    """
     kind = semantics.kind
-    if kind not in CATALOG_PARENT_KIND:
-        return parent_semantics is None or (
-            kind in DELIVERY_KINDS and parent_semantics.kind in DELIVERY_KINDS
+    if kind in CATALOG_PARENT_KIND:
+        expected = CATALOG_PARENT_KIND[kind]
+        return (
+            parent_semantics is None
+            if expected is None
+            else parent_semantics is not None and parent_semantics.kind == expected
         )
-    expected = CATALOG_PARENT_KIND[kind]
+    if parent_semantics is None:
+        return True
+    parent_kind = parent_semantics.kind
+    return parent_kind is None or parent_kind in DELIVERY_KINDS
+
+
+def semantic_parent_reason(
+    semantics: CardSemantics,
+    parent_semantics: CardSemantics | None,
+) -> str:
+    """A caller-facing sentence for why ``valid_semantic_parent`` refused.
+
+    Only meaningful when the pair is actually invalid; it names the card's kind
+    and what parent that kind requires, so the error points at the real
+    constraint (the semantic hierarchy) instead of a guess.
+    """
+    kind = semantics.kind
+    if parent_semantics is None:
+        parent_desc = "no parent"
+    elif parent_semantics.kind is None:
+        parent_desc = "a kind-less parent"
+    else:
+        parent_desc = f"a {parent_semantics.kind!r} parent"
+    if kind in CATALOG_PARENT_KIND:
+        expected = CATALOG_PARENT_KIND[kind]
+        if expected is None:
+            return (
+                f"semantic hierarchy: a {kind!r} card must be top-level, "
+                f"but it was given {parent_desc}"
+            )
+        return (
+            f"semantic hierarchy: a {kind!r} card must sit under a {expected!r} "
+            f"parent, but it was given {parent_desc}"
+        )
     return (
-        parent_semantics is None
-        if expected is None
-        else parent_semantics is not None and parent_semantics.kind == expected
+        f"semantic hierarchy: a {kind!r} card cannot sit under {parent_desc} "
+        f"(a delivery kind may only sit under another delivery kind, a "
+        f"kind-less parent, or no parent)"
     )

@@ -294,7 +294,7 @@ def api_import_board(body: ImportBoard):
                 if not parent_id:
                     remaining.append(card)
                     continue
-            created = cs.create_card(board.id, CreateCard(
+            created, reject = cs.create_card_result(board.id, CreateCard(
                 external_id=card.external_id,
                 title=card.title,
                 body=card.body,
@@ -306,7 +306,10 @@ def api_import_board(body: ImportBoard):
                 semantics=card.semantics,
             ))
             if not created:
-                raise HTTPException(400, f"failed to create card: {card.title}")
+                detail = f"failed to create card: {card.title}"
+                if reject:
+                    detail = f"{detail} ({reject.reason})"
+                raise HTTPException(400, detail)
             if card.external_id:
                 created_by_external_id[card.external_id] = created.id
             created_any = True
@@ -554,9 +557,9 @@ def api_relevant_candidates(
 @app.post("/api/boards/{board_id}/cards", status_code=201)
 def api_create_card(board_id: str, body: CreateCard):
     _board_or_404(board_id)
-    card = cs.create_card(board_id, body)
+    card, reject = cs.create_card_result(board_id, body)
     if not card:
-        raise HTTPException(400, "Invalid column_id or board")
+        raise HTTPException(400, reject.reason if reject else "Invalid column_id or board")
     _sync_board_if_enabled(board_id)
     return card
 
@@ -586,13 +589,13 @@ def api_get_card(board_id: str, card_id: str):
 def api_update_card(board_id: str, card_id: str, body: UpdateCard):
     _board_or_404(board_id)
     _validate_id(card_id, "card_id")
-    card = cs.update_card(board_id, card_id, body)
+    card, reject = cs.update_card_result(board_id, card_id, body)
     if not card:
         if not cs.get_card(board_id, card_id):
             raise HTTPException(404, "Card not found")
         raise HTTPException(
             409,
-            "Update has an unknown column, invalid parent or semantic hierarchy, or edge conflict",
+            reject.reason if reject else "Update refused by a card constraint",
         )
     _sync_board_if_enabled(board_id)
     return card

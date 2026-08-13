@@ -36,6 +36,19 @@ class _Aborted(Exception):
         self.error = error
 
 
+def _reason(tx, index: int, op: str, fallback: str) -> str:
+    """Turn the transaction's recorded refusal into one actionable sentence.
+
+    Names the operation, its index, the offending field and the specific cause,
+    so the caller can fix that one op and resend instead of guessing which of
+    several unrelated constraints an OR'd catch-all might have meant.
+    """
+    reject = getattr(tx, "reject", None)
+    if reject is None:
+        return f"{op} failed at op {index}: {fallback}"
+    return f"{op} failed at op {index} (field {reject.field!r}): {reject.reason}"
+
+
 def _resolve(refs: dict[str, str], value: str | None, index: int, field: str) -> str | None:
     """Turn an "@ref" into the id of the card that op created."""
     if not isinstance(value, str) or not value.startswith(REF_PREFIX):
@@ -54,7 +67,7 @@ def _apply_one(tx, board_id: str, op, index: int, refs: dict[str, str]) -> BulkO
         fields["parent_id"] = _resolve(refs, fields["parent_id"], index, "parent_id")
         card = card_store.apply_create(tx, board_id, CreateCard(**fields))
         if not card:
-            raise _Aborted(index, "create failed: unknown board or column")
+            raise _Aborted(index, _reason(tx, index, "create", "unknown board or column"))
         if op.ref:
             refs[op.ref] = card.id
         return BulkOperationResult(index=index, op="create", card_id=card.id, ref=op.ref)
@@ -71,10 +84,7 @@ def _apply_one(tx, board_id: str, op, index: int, refs: dict[str, str]) -> BulkO
         if not any(card.id == card_id for card in tx.cards):
             raise _Aborted(index, f"update failed: no card {card_id}")
         if not card_store.apply_update(tx, board_id, card_id, UpdateCard(**fields)):
-            raise _Aborted(
-                index,
-                "update failed: unknown column, invalid parent or semantic hierarchy, or edge conflict",
-            )
+            raise _Aborted(index, _reason(tx, index, "update", "constraint violation"))
         return BulkOperationResult(index=index, op="update", card_id=card_id)
 
     if isinstance(op, BulkMove):

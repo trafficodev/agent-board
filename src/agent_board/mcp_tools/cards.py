@@ -11,7 +11,21 @@ SEMANTICS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "kind": {"type": "string", "enum": ["product_area", "feature", "requirement", "task", "bug", "test", "decision", "finding"]},
+        "kind": {
+            "type": "string",
+            "enum": ["product_area", "feature", "requirement", "task", "bug", "test", "decision", "finding"],
+            "description": (
+                "Semantic kind. Parent rules (the only constraint on setting a kind): "
+                "'product_area' must be top-level; 'feature' must sit under a "
+                "'product_area'; 'requirement' must sit under a 'feature' (and needs "
+                "outcome + acceptance_criteria); the delivery kinds ('task', 'bug', "
+                "'test', 'decision', 'finding') may sit under no parent, a kind-less "
+                "parent, or any other delivery kind, but not under a catalog kind. "
+                "Catalog kinds ('product_area'/'feature'/'requirement') additionally "
+                "require catalog_lifecycle. No kind requires a linked remote and none "
+                "creates an implied edge — kind is independent of edges and remote state."
+            ),
+        },
         "catalog_lifecycle": {"type": "string", "enum": ["proposed", "active", "accepted", "deprecated"]},
         "outcome": {"type": "string"},
         "acceptance_criteria": {"type": "array", "items": {"type": "string"}},

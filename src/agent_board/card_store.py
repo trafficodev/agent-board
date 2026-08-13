@@ -7,7 +7,11 @@ from datetime import datetime, timezone, timedelta
 
 from . import card_history
 from . import db
-from .card_semantics import CardSemantics, valid_semantic_parent
+from .card_semantics import (
+    CardSemantics,
+    semantic_parent_reason,
+    valid_semantic_parent,
+)
 from .models import (
     AddNote,
     AddSession,
@@ -37,6 +41,26 @@ from .edge_store import direction_is_valid, read_edges, write_edges
 CLOSED_CARD_TTL = timedelta(days=3)
 CLOSED_AT_METADATA_KEY = "closed_at"
 DAG_ORDERED_COLUMN = "open items"
+
+
+class CardConstraintError:
+    """The single, specific reason a mutation was refused.
+
+    The store's ``apply_*`` helpers keep their ``Card | None`` contract -- a
+    ``None`` return still means "did not apply". What was missing was *why*:
+    an update could be refused by any of half a dozen unrelated constraints and
+    the caller only ever saw one catch-all sentence that OR'd them together. So
+    a refusal now also records one of these on the transaction, naming the
+    offending ``field`` and a machine ``code`` alongside the human ``reason``,
+    and the API and bulk layers surface that instead of guessing.
+    """
+
+    __slots__ = ("code", "field", "reason")
+
+    def __init__(self, code: str, field: str, reason: str):
+        self.code = code
+        self.field = field
+        self.reason = reason
 
 # How much authorship history the card document itself carries. This is a
 # convenience projection for anyone holding a card; the journal behind
@@ -266,9 +290,16 @@ class _Transaction:
         self.events: list[Event] = []
         self.edges_dirty = False
         self.commit = False
+        # Set by an apply_* helper right before it refuses, so the caller can
+        # report the specific constraint rather than a catch-all. Cleared at
+        # the start of each apply_* call so a batch never reports a stale one.
+        self.reject: CardConstraintError | None = None
         # What was on disk when this transaction opened, so the write can tell
         # which cards it actually has to touch.
         self.original = {card.id: card.model_dump(mode="json") for card in cards}
+
+    def refuse(self, code: str, field: str, reason: str) -> None:
+        self.reject = CardConstraintError(code, field, reason)
 
     def record(self, *events: Event) -> None:
         self.events.extend(events)
@@ -401,16 +432,35 @@ def apply_create(tx: _Transaction, board_id: str, data: CreateCard) -> Card | No
     through the apply_* helpers, so batching a change can never drift from
     doing it one at a time.
     """
+    tx.reject = None
     board = get_board(board_id)
-    if not board or data.column_id not in [c.id for c in board.columns]:
+    if not board:
+        tx.refuse("unknown_board", "board_id", f"board {board_id!r} does not exist")
+        return None
+    if data.column_id not in [c.id for c in board.columns]:
+        tx.refuse(
+            "unknown_column",
+            "column_id",
+            f"unknown column {data.column_id!r}: it does not exist on this board",
+        )
         return None
     parent = next((card for card in tx.cards if card.id == data.parent_id), None)
     if data.parent_id and parent is None:
+        tx.refuse(
+            "unknown_parent",
+            "parent_id",
+            f"parent card {data.parent_id!r} does not exist on this board",
+        )
         return None
     if data.semantics.kind and not valid_semantic_parent(
         data.semantics,
         parent.semantics if parent else None,
     ):
+        tx.refuse(
+            "semantic_hierarchy",
+            "semantics.kind",
+            semantic_parent_reason(data.semantics, parent.semantics if parent else None),
+        )
         return None
 
     now = _now()
@@ -439,9 +489,18 @@ def apply_create(tx: _Transaction, board_id: str, data: CreateCard) -> Card | No
     return card
 
 
-def create_card(board_id: str, data: CreateCard) -> Card | None:
+def create_card_result(
+    board_id: str, data: CreateCard
+) -> tuple[Card | None, CardConstraintError | None]:
+    """Create one card, returning the card or the specific reason it was refused."""
     with board_transaction(board_id) as tx:
-        return apply_create(tx, board_id, data)
+        card = apply_create(tx, board_id, data)
+        reject = None if card else tx.reject
+    return card, reject
+
+
+def create_card(board_id: str, data: CreateCard) -> Card | None:
+    return create_card_result(board_id, data)[0]
 
 
 def _matches_upsert(card: Card, data: CreateCard) -> bool:
@@ -485,6 +544,7 @@ def upsert_card(board_id: str, data: CreateCard) -> Card | None:
 
 def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard) -> Card | None:
     """Update one card inside an already-open transaction."""
+    tx.reject = None
     card = next((c for c in tx.cards if c.id == card_id), None)
     if not card:
         return None
@@ -494,15 +554,31 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
     if data.column_id is not None:
         board = get_board(board_id)
         if not board or data.column_id not in [c.id for c in board.columns]:
+            tx.refuse(
+                "unknown_column",
+                "column_id",
+                f"unknown column {data.column_id!r}: it does not exist on this board",
+            )
             return None
     if "parent_id" in data.model_fields_set and data.parent_id:
         # Re-parenting a card under its own descendant makes a cycle that
         # wedges every later walk of the tree, so it is refused outright.
         if data.parent_id == card_id:
+            tx.refuse("parent_cycle", "parent_id", "a card cannot be its own parent")
             return None
         if not any(c.id == data.parent_id for c in tx.cards):
+            tx.refuse(
+                "unknown_parent",
+                "parent_id",
+                f"parent card {data.parent_id!r} does not exist on this board",
+            )
             return None
         if any(c.id == data.parent_id for c in _collect_descendants(tx.cards, card_id)):
+            tx.refuse(
+                "parent_cycle",
+                "parent_id",
+                "cannot reparent a card beneath one of its own descendants",
+            )
             return None
 
     final_parent_id = data.parent_id if "parent_id" in data.model_fields_set else card.parent_id
@@ -512,9 +588,24 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
         final_semantics,
         final_parent.semantics if final_parent else None,
     ):
+        tx.refuse(
+            "semantic_hierarchy",
+            "semantics.kind",
+            semantic_parent_reason(
+                final_semantics,
+                final_parent.semantics if final_parent else None,
+            ),
+        )
         return None
     for child in (candidate for candidate in tx.cards if candidate.parent_id == card_id):
         if child.semantics.kind and not valid_semantic_parent(child.semantics, final_semantics):
+            tx.refuse(
+                "semantic_hierarchy",
+                "semantics.kind",
+                f"semantic hierarchy: setting this card to kind "
+                f"{final_semantics.kind!r} would leave its {child.semantics.kind!r} "
+                f"child {child.id!r} under an invalid parent",
+            )
             return None
     proposed = card.model_copy(update={
         "parent_id": final_parent_id,
@@ -530,8 +621,22 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
         source = cards_by_id.get(edge.from_card_id)
         target = cards_by_id.get(edge.to_card_id)
         if not source or not target or not direction_is_valid(edge.type, source, target):
+            tx.refuse(
+                "edge_conflict",
+                "semantics.kind",
+                f"edge conflict: this change would make the existing "
+                f"{edge.type!r} edge {edge.from_card_id[:8]}…→{edge.to_card_id[:8]}… "
+                f"invalid between these card kinds",
+            )
             return None
         if edge.type in {"defines", "parent_of"} and target.parent_id != source.id:
+            tx.refuse(
+                "edge_conflict",
+                "parent_id",
+                f"edge conflict: this change would break the {edge.type!r} edge "
+                f"{edge.from_card_id[:8]}…→{edge.to_card_id[:8]}…, which requires "
+                f"the target's parent to be the source",
+            )
             return None
 
     closed_column_id = _closed_column_id(board_id)
@@ -575,9 +680,22 @@ def apply_update(tx: _Transaction, board_id: str, card_id: str, data: UpdateCard
     return card
 
 
-def update_card(board_id: str, card_id: str, data: UpdateCard) -> Card | None:
+def update_card_result(
+    board_id: str, card_id: str, data: UpdateCard
+) -> tuple[Card | None, CardConstraintError | None]:
+    """Update one card, returning the card or the specific reason it was refused.
+
+    A ``None`` card with a ``None`` reason means the card itself was not found;
+    a ``None`` card with a reason means a named constraint refused the change.
+    """
     with board_transaction(board_id) as tx:
-        return apply_update(tx, board_id, card_id, data)
+        card = apply_update(tx, board_id, card_id, data)
+        reject = None if card else tx.reject
+    return card, reject
+
+
+def update_card(board_id: str, card_id: str, data: UpdateCard) -> Card | None:
+    return update_card_result(board_id, card_id, data)[0]
 
 
 def _collect_descendants(cards: list[Card], parent_id: str) -> list[Card]:

@@ -60,6 +60,53 @@ class CardSemanticsStoreTest(unittest.TestCase):
             )
         )
 
+    def test_delivery_kind_is_accepted_under_a_kind_less_parent(self):
+        # Regression: a grouping card with no semantic kind used to block any
+        # of its children from taking a kind at all, so `kind=test`/`decision`
+        # 422'd with a misleading edge/remote-sounding error. A kind-less parent
+        # is a container, not a catalog node, and must not gate its children.
+        grouping = card_store.create_card(
+            self.board.id,
+            CreateCard(title="Grouping", column_id=self.catalog),
+        )
+        child = card_store.create_card(
+            self.board.id,
+            CreateCard(title="Child", column_id=self.catalog, parent_id=grouping.id),
+        )
+        for kind in ("task", "test", "decision"):
+            updated = card_store.update_card(
+                self.board.id,
+                child.id,
+                UpdateCard(semantics=CardSemantics(kind=kind, acceptance_criteria=["x"])),
+            )
+            self.assertIsNotNone(updated, f"{kind} should be accepted under a kind-less parent")
+            self.assertEqual(updated.semantics.kind, kind)
+
+    def test_catalog_hierarchy_refusal_names_the_specific_reason(self):
+        # The refusal reason identifies the semantic-hierarchy cause and field,
+        # rather than OR-ing three unrelated causes together.
+        area = self._create("Area", "product_area")
+        _, reject = card_store.create_card_result(
+            self.board.id,
+            CreateCard(
+                title="Requirement under area",
+                column_id=self.catalog,
+                parent_id=area.id,
+                semantics=CardSemantics(
+                    kind="requirement",
+                    catalog_lifecycle="active",
+                    outcome="o",
+                    acceptance_criteria=["a"],
+                ),
+            ),
+        )
+        self.assertIsNotNone(reject)
+        self.assertEqual(reject.code, "semantic_hierarchy")
+        self.assertEqual(reject.field, "semantics.kind")
+        self.assertIn("semantic hierarchy", reject.reason)
+        self.assertNotIn("edge conflict", reject.reason)
+        self.assertNotIn("unknown column", reject.reason)
+
     def test_semantics_participate_in_history_and_revert(self):
         area = self._create("Area", "product_area")
         updated = card_store.update_card(
